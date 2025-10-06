@@ -36,7 +36,8 @@ class FrameFusion(nn.Module):
             self.sparsity_list = []
         else:
             self.sparsity_list = sparsity_list
-
+    ### start token merging at layer 0 before attention
+    # 替换llm的decoder layer的forward方法
     def forward(
         self, hidden_states, position_embeddings, attention_mask, self_attn_weights=None
     ):
@@ -56,7 +57,7 @@ class FrameFusion(nn.Module):
         """
         bsz, q_len, hidden_size = hidden_states.size()
         device = hidden_states.device    
-
+        # 浅层做 pruning， 深层做 merging
         # pruning
         if q_len >1 and self.finish_merging == True and self.finish_pruning == False:
 
