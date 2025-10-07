@@ -1,9 +1,64 @@
 from typing import List
 import torch
 from torch import nn
+import pdb
 
 TEXT_TOKEN = -1
 IGNORE_TOKEN = -2
+
+# [CDPruner] Generate index masks using conditional DPP
+def cdpruner(image_features, last_layer_attention_avg_image, topk_image_token_num):
+    B, N, D = image_features.shape
+    device = image_features.device
+    # index_masks = torch.ones(B, N, dtype=torch.bool, device=device)
+    
+    
+    # [CDPruner] Calculate cosine similarity
+    image_normalized = image_features / image_features.norm(dim=-1, keepdim=True) # (B, N, D)
+    image_normalized = image_normalized.float() # (B, N, D)
+    similarity = torch.matmul(image_normalized, image_normalized.transpose(1, 2)) # (B, N, N)
+
+    # [CDPruner] Calculate query relevance
+    # image_embeds = image_embeds / image_embeds.norm(dim=-1, keepdim=True) # (B, N, C)
+    # text_embeds = text_embeds / text_embeds.norm(dim=-1, keepdim=True) # (M, C)
+    # relevance = torch.matmul(image_embeds, text_embeds.t()) # (B, N, M)
+    # relevance = (-relevance).mean(dim=-1) # (B, N)
+    # relevance = (relevance - relevance.min() + 1e-6) / (relevance.max() - relevance.min()) # (B, N)
+    
+    relevance = (-last_layer_attention_avg_image) # (B, N)
+    relevance = (relevance - relevance.min() + 1e-6) / (relevance.max() - relevance.min()) # (B, N)
+
+
+
+    # [CDPruner] Construct kernel matrix
+    # You can use an additional hyperparameter theta to control the influence of the relevance score.
+    # theta = 0.5
+    # alpha = theta / (2 * (1 - theta))
+    # relevance = torch.exp(alpha * relevance) # (B, N)
+
+    # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
+    # pdb.set_trace()
+    kernel = relevance.unsqueeze(2) * similarity * relevance.unsqueeze(1) # (B, N, N)
+
+    # [CDPruner] Fast MAP inference of conditional DPP
+    cis = torch.zeros((topk_image_token_num, B, N), device=device) # (T, B, N)
+    di2s = torch.diagonal(kernel, dim1=1, dim2=2).clone() # (B, N)
+    select_idx = torch.empty((topk_image_token_num, B), dtype=torch.long, device=device) # (T, B)
+    for i in range(topk_image_token_num):
+        j = torch.argmax(di2s, dim=-1)
+        select_idx[i] = j
+
+        eis = (kernel[torch.arange(B), j] - torch.einsum('tb,tbn->bn', cis[:i, torch.arange(B), j], cis[:i])) \
+            / torch.sqrt(di2s[torch.arange(B), j]).unsqueeze(-1)
+        cis[i, :, :] = eis
+        di2s -= torch.square(eis)
+        di2s[torch.arange(B), j] = -float('inf')
+    # pdb.set_trace()
+    # select_idx = torch.sort(select_idx.t()).values # (B, T)
+    # index_masks = torch.zeros(B, N, dtype=torch.bool, device=device)
+    # index_masks.scatter_(1, select_idx, True)
+    
+    return select_idx.t()[0] # 去掉batch维度
 
 class FrameFusion(nn.Module):
     def __init__(self, cost=0.3, similarity_lower_bound=0.6, ratio_lower_bound=0.1):
@@ -37,7 +92,7 @@ class FrameFusion(nn.Module):
         else:
             self.sparsity_list = sparsity_list
     ### start token merging at layer 0 before attention
-    # 替换llm的decoder layer的forward方法
+    # 包含了每一个decoder layer 具体做 token merging 和 pruning 的逻辑
     def forward(
         self, hidden_states, position_embeddings, attention_mask, self_attn_weights=None
     ):
@@ -65,20 +120,33 @@ class FrameFusion(nn.Module):
                 return x.item() if isinstance(x, torch.Tensor) else int(x)
             image_token_pruning_start_index = to_int(self.image_token_start_index)
             image_token_pruning_length = to_int(self.image_token_length - (self.original_length - q_len))
-
+            # self.original_length - q_len: 当前层之前merge/prune了多少image token
+            # self.image_token_length - (self.original_length - q_len): 当前层还剩多少image token
 
             last_layer_attention = self_attn_weights
-            last_layer_attention_avg = torch.mean(last_layer_attention, dim=(1,2))[0]
-            last_layer_attention_avg_image = last_layer_attention_avg[image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length]
+            last_layer_attention_avg = torch.mean(last_layer_attention, dim=(1,2)) # (B, N)
+            last_layer_attention_avg_image = last_layer_attention_avg[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length]
 
             pruning_ratio = self._compute_pruning_ratio(self.sparsity_list, self.cost)
-            top_attention_rank_index = (
-                last_layer_attention_avg_image.topk(
-                    round(image_token_pruning_length * (1 - pruning_ratio))
-                ).indices
-                + image_token_pruning_start_index
-            )
 
+            # ====== FrameFusion prune策略
+            # top_attention_rank_index = (
+            #     last_layer_attention_avg_image[0].topk( # 0表示batch，这里batch=1，所以是去掉batch这个维度
+            #         round(image_token_pruning_length * (1 - pruning_ratio))
+            #     ).indices
+            #     + image_token_pruning_start_index
+            # )
+            # round(image_token_pruning_length * (1 - pruning_ratio)): 本轮剪枝后，保留的image token数量
+
+            # ====== CDPruner prune策略
+            # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
+            top_attention_rank_index = (
+                cdpruner(hidden_states[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length, :],
+                                last_layer_attention_avg_image, 
+                                round(image_token_pruning_length * (1 - pruning_ratio)))
+                                + image_token_pruning_start_index
+            )
+            # pdb.set_trace()
             keep_indexs = torch.cat(
                 (
                     torch.arange(image_token_pruning_start_index, device=device),

@@ -68,7 +68,6 @@ def apply_framefusion(model, cost, similarity_lower_bound, ratio_lower_bound):
     # LlavaVideo Model
     elif (not SKIP_LLAVA_NEXT) and isinstance(model, LlavaQwenForCausalLM):
         model.prepare_inputs_labels_for_multimodal = MethodType(prepare_inputs_labels_for_multimodal_get_patch_type, model)
-
         llm_forward = Qwen2Model_merge_then_fastv_cost_given_forward
         decoder_forward = Qwen2DecoderLayer_merge_then_prune_by_cost_forward
         attention_forward = Qwen2SdpaAttention_merge_then_prune_by_cost_forward
