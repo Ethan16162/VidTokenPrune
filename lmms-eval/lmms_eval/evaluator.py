@@ -195,9 +195,9 @@ def simple_evaluate(
                 "device": device,
             },
         )
-        from framefusion.interface import apply_framefusion
-        model_to_compress = getattr(lm, "_model", lm.model)
-        apply_framefusion(model_to_compress, cost=0.3, similarity_lower_bound=0.6, ratio_lower_bound=0.1)
+        # from framefusion.interface import apply_framefusion
+        # model_to_compress = getattr(lm, "_model", lm.model)
+        # apply_framefusion(model_to_compress, cost=0.3, similarity_lower_bound=0.6, ratio_lower_bound=0.1)
     elif isinstance(model, lmms_eval.api.model.lmms):
         lm = model
     task_type = "simple" if lm.is_simple else "chat"
