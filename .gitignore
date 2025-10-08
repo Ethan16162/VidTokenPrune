@@ -9,6 +9,8 @@ wandb/
 .gradio/
 
 
+*.log
+*.pyc
 *.png
 *.pdf
 *.pt
