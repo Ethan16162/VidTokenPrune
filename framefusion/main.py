@@ -130,22 +130,22 @@ class FrameFusion(nn.Module):
             pruning_ratio = self._compute_pruning_ratio(self.sparsity_list, self.cost)
 
             # ====== FrameFusion prune策略
-            # top_attention_rank_index = (
-            #     last_layer_attention_avg_image[0].topk( # 0表示batch，这里batch=1，所以是去掉batch这个维度
-            #         round(image_token_pruning_length * (1 - pruning_ratio))
-            #     ).indices
-            #     + image_token_pruning_start_index
-            # )
+            top_attention_rank_index = (
+                last_layer_attention_avg_image[0].topk( # 0表示batch，这里batch=1，所以是去掉batch这个维度
+                    round(image_token_pruning_length * (1 - pruning_ratio))
+                ).indices
+                + image_token_pruning_start_index
+            )
             # round(image_token_pruning_length * (1 - pruning_ratio)): 本轮剪枝后，保留的image token数量
 
-            # ====== CDPruner prune策略
-            # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
-            top_attention_rank_index = (
-                cdpruner(hidden_states[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length, :],
-                                last_layer_attention_avg_image, 
-                                round(image_token_pruning_length * (1 - pruning_ratio)))
-                                + image_token_pruning_start_index
-            )
+            # # ====== CDPruner prune策略
+            # # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
+            # top_attention_rank_index = (
+            #     cdpruner(hidden_states[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length, :],
+            #                     last_layer_attention_avg_image, 
+            #                     round(image_token_pruning_length * (1 - pruning_ratio)))
+            #                     + image_token_pruning_start_index
+            # )
             # pdb.set_trace()
             keep_indexs = torch.cat(
                 (
