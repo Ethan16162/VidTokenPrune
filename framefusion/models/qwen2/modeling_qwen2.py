@@ -7,6 +7,7 @@ from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.utils.doc import add_start_docstrings_to_model_forward
 
 from framefusion.utils import scaled_dot_product_attention
+import pdb
 
 def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
         self,
@@ -42,10 +43,12 @@ def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
                 into the model
         """
         ### start token merging at layer 0 before attention
+        # pdb.set_trace()
         if self.self_attn.layer_idx == 0:
             hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask)
         ### end token merging at layer 0 before attention
-
+        
+        # pdb.set_trace()
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
