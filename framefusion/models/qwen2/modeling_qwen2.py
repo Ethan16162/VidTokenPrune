@@ -45,6 +45,7 @@ def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
         ### start token merging at layer 0 before attention
         # pdb.set_trace()
         if self.self_attn.layer_idx == 0:
+            self.framefusion.init_segment()
             hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask)
         ### end token merging at layer 0 before attention
         

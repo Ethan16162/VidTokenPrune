@@ -67,6 +67,59 @@ class FrameFusion(nn.Module):
         self.similarity_lower_bound = similarity_lower_bound
         self.ratio_lower_bound = ratio_lower_bound
         self.segment_threshold = segment_threshold  # 用于frame segmentation的阈值
+        self.segment_hidden_states_mask = None
+        self.frame_segment = False # 控制只在decoder layer0做segment
+
+    def init_segment(self):
+        self.frame_segment = False # 控制只在decoder layer0做segment
+
+    # guoyansong 生成segment mask tensor
+    def get_segment_id_tensor(self,
+                            frame_similarity_scores, 
+                            patch_num, 
+                            image_token_start_index, 
+                            image_token_end_index, 
+                            seq_len, 
+                            frame_segment_threshold=0.4,
+                            device='cuda'): # device = hidden_states.device  
+        """
+        Args:
+            frame_similarity_scores: (64,) 表示相邻帧的相似度
+            patch_num: 每帧的 token 数量 (int)
+            image_token_start_index, image_token_end_index: image token 的区间 [start, end)
+            seq_len: hidden_states 的总 token 数
+            threshold: 低于此阈值时视为 segment 边界
+        Returns:
+            segment_id_tensor: (1, seq_len) 形状的 tensor，非图像 token 为 -1
+        """
+
+        num_frames = frame_similarity_scores.shape[0]
+        # 1. 根据相似度找出segment边界
+        # frame 0 一定是 segment 0
+        segment_ids_per_frame = [0]
+        current_segment = 0
+        for i in range(1, num_frames):
+            if frame_similarity_scores[i] < frame_segment_threshold:
+                current_segment += 1
+            segment_ids_per_frame.append(current_segment)
+        segment_ids_per_frame = torch.tensor(segment_ids_per_frame, device=device)
+
+        # 2. 初始化所有 token 的 segment id = -1
+        segment_id_tensor = torch.full((1, seq_len), -1, dtype=torch.long, device=device)
+
+        # 3. 对每个 frame 的 image token 区间赋值对应 segment id
+        for frame_idx in range(num_frames):
+            seg_id = segment_ids_per_frame[frame_idx]
+            # 当前 frame 的 image token 区间
+            start = image_token_start_index + frame_idx * patch_num
+            end = start + patch_num
+            # 防止超出 image_token_end_index
+            if end > image_token_end_index:
+                end = image_token_end_index
+            segment_id_tensor[0, start:end] = seg_id
+
+        return segment_id_tensor
+
 
     def prepare(
         self,
@@ -126,43 +179,69 @@ class FrameFusion(nn.Module):
 
             last_layer_attention = self_attn_weights
             last_layer_attention_avg = torch.mean(last_layer_attention, dim=(1,2)) # (B, N)
-            last_layer_attention_avg_image = last_layer_attention_avg[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length]
+            # last_layer_attention_avg_image = last_layer_attention_avg[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length]
 
-            # ====== guoyansong 使用segment-based cdpruning策略
-            if hasattr(self, 'frame_segments') and self.frame_segments:
-                # 对每个segment分别应用cdpruner
-                keep_indexs = self._apply_cdpruner_to_segments(
-                    hidden_states, 
-                    last_layer_attention_avg_image, 
-                    image_token_pruning_start_index, 
-                    image_token_pruning_length, 
-                    self.frame_segments, 
-                    self.patch_num
-                )
-            else:
-                # 如果没有segments，使用原来的pruning策略
-                pruning_ratio = self._compute_pruning_ratio(self.sparsity_list, self.cost)
-                # ====== FrameFusion prune策略
-                top_attention_rank_index = (
-                    last_layer_attention_avg_image[0].topk( # 0表示batch，这里batch size=1，所以是去掉batch这个维度
-                        round(image_token_pruning_length * (1 - pruning_ratio))
-                    ).indices
-                    + image_token_pruning_start_index
-                )
-                keep_indexs = torch.cat(
-                    (
-                        torch.arange(image_token_pruning_start_index, device=device),
-                        top_attention_rank_index,
-                        torch.arange(
-                            image_token_pruning_start_index + image_token_pruning_length,
-                            q_len,
-                            device=device,
-                        ),
-                    )
-                )
-                keep_indexs = keep_indexs.sort().values
+            pruning_ratio = self._compute_pruning_ratio(self.sparsity_list, self.cost)
 
-            hidden_states = hidden_states[:,keep_indexs,:] 
+            # guoyansong 逐segment提取cdpruner剪枝 ==============================
+            mask = self.segment_hidden_states_mask[0]  # 变成一维向量，形状 [4503]
+            segment_ids = mask[mask >= 0].unique().tolist()  # 所有有效 segment id
+            segment_keep_info = []  # 存储结果 [(seg_id, start_idx, token_count, keep_num), ...]
+            # 计算 global prune_keep_ratio
+            prune_keep_ratio = 1 - pruning_ratio
+
+            for seg_id in segment_ids:
+                # 找到当前 segment 的所有 token 的位置
+                seg_positions = (mask == seg_id).nonzero(as_tuple=True)[0]
+                # 起始位置 = 最小的索引
+                start_idx = seg_positions[0].item()
+                # 当前 segment 的 token 数量
+                token_count = seg_positions.numel()
+                # 要保留的数量 = token_count * 保留率
+                retain_num = int(token_count * prune_keep_ratio)
+
+                segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
+            # 打印
+            # for seg_id, start_idx, token_count, retain_num in segment_keep_info:
+            #     print(f"Segment {seg_id}: start={start_idx}, count={token_count}, keep={retain_num}")
+
+            # 遍历segment，分别cdpruner
+            top_attention_rank_index = []
+            for _, start_idx, token_count, retain_num in segment_keep_info:
+                top_attention_rank_index.append(
+                    cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
+                                last_layer_attention_avg[:, start_idx:start_idx+token_count], 
+                                retain_num)
+                                + start_idx
+                )
+            top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
+            
+            # ====== CDPruner prune策略
+            # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
+            # top_attention_rank_index = (
+            #     cdpruner(hidden_states[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length, :],
+            #                     last_layer_attention_avg[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length], 
+            #                     round(image_token_pruning_length * (1 - pruning_ratio)))
+            #                     + image_token_pruning_start_index
+            # )
+            
+            
+
+            keep_indexs = torch.cat(
+                (
+                    torch.arange(image_token_pruning_start_index, device=device),
+                    top_attention_rank_index,
+                    torch.arange(
+                        image_token_pruning_start_index + image_token_pruning_length,
+                        q_len,
+                        device=device,
+                    ),
+                )
+            )
+            keep_indexs = keep_indexs.sort().values
+
+            self.segment_hidden_states_mask = self.segment_hidden_states_mask[:,keep_indexs]
+            hidden_states = hidden_states[:,keep_indexs,:]
 
             position_embeddings = self.position_embedding_handler_at_pruning(position_embeddings, keep_indexs)
 
@@ -179,17 +258,27 @@ class FrameFusion(nn.Module):
 
             # prefill  ================  计算mergeing 对应的 image token index
             sparsity_upper_bound = self._compute_pruning_ratio(self.sparsity_list, self.cost) # 计算最终的目标剪枝率
-            similarity_by_patch, token_index_by_patch, frame_similarity_scores = self.compute_similarity_and_token_index_by_patch(hidden_states, self.patch_type, self.patch_num) # only support bsz = 1
-            # pdb.set_trace()
+            similarity_by_patch, token_index_by_patch, token_patch_type_by_patch = self.compute_similarity_and_token_index_by_patch(hidden_states, self.patch_type, self.patch_num) # only support bsz = 1
+            
+            # guoyansong 计算每个frame的相似度得分 ==========================
+            # guoyansong：similarity_by_patch计算余弦相似度结果存在nan(framefusion源码就存在这个问题)，导致下面的frame_similarity_scores全部nan
+            # 下面把求相似度的平均值 改成 大于merge阈值的token个数
+            if self.frame_segment is False: # 保证只在layer0做一次segment
+                frame_similarity_scores = FrameFusion._compute_frame_similarity_scores(
+                    similarity_by_patch, token_patch_type_by_patch, self.patch_num, device, 0.6
+                )
+                # guoyansong 基于frame分段结果，创建segment mask ================= 本函数只执行一次，即只在layer 0 就分好segment
+                self.segment_hidden_states_mask = self.get_segment_id_tensor(frame_similarity_scores, self.patch_num, self.image_token_start_index, self.image_token_end_index, q_len, 0.4, device)
+                self.frame_segment = True
 
             frame_token_num = torch.sum(self.patch_type != TEXT_TOKEN).item() # image token总量
-            merge_index_by_patch = torch.where(similarity_by_patch >= self.similarity_lower_bound)[1] # merging的阈值
+            merge_index_by_patch = torch.where(similarity_by_patch >= self.similarity_lower_bound)[1] # self.similarity_lower_bound：merging的阈值
             above_k_ratio = merge_index_by_patch.shape[0] / frame_token_num # mergeing操作剪枝的比率
             # 只在decoder layer0做一次mergeing操作
             if above_k_ratio < sparsity_upper_bound: # mergeing没有达到了目标剪枝率，后续继续做pruning
                 self.sparsity_list.append(above_k_ratio) #记录当前decoder layer的剪枝率
-
-                if above_k_ratio < self.ratio_lower_bound:
+                #经过多layer mergeing后，above_k_ratio不超过阈值
+                if above_k_ratio < self.ratio_lower_bound: 
                     self.finish_merging = True
             else:# 仅仅mergeing就达到了目标剪枝率，不需要做pruning了
                 topk_values, topk_indices = torch.topk(similarity_by_patch, int(sparsity_upper_bound*frame_token_num))
@@ -202,9 +291,12 @@ class FrameFusion(nn.Module):
             hidden_states, token_mask = self.merge_tokens_and_get_mask(hidden_states, similarity_by_patch, token_index_by_patch, merge_index_by_patch)
             
             # ===================== guoyansong 基于frame相似度进行segmentation
-            segments = self._segment_frames_by_similarity(frame_similarity_scores, self.segment_threshold)
-            self.frame_segments = segments  # 保存segments供后续pruning使用
-            
+            # segments = self._segment_frames_by_similarity(frame_similarity_scores, self.segment_threshold)
+            # self.frame_segments = segments  # 保存segments供后续pruning使用
+
+            # 基于merge结果，更新segment mask
+            self.segment_hidden_states_mask = self.segment_hidden_states_mask[token_mask].reshape(bsz, -1)
+
             # here only bsz=1
             # update patch type
             self.patch_type = self.patch_type.to(device)[token_mask].reshape(bsz, -1)
@@ -315,28 +407,24 @@ class FrameFusion(nn.Module):
             ),
             dim=1,
         )
-        # TODO similarity_by_patch计算余弦相似度结果存在nan，导致下面的frame_similarity_scores全部nan
-        # guoyansong 计算每个frame的相似度得分
-        frame_similarity_scores = FrameFusion._compute_frame_similarity_scores(
-            similarity_by_patch, token_patch_type_by_patch, patch_num, device
-        )
 
         assert similarity_by_patch.shape[1] == token_index_by_patch.shape[1]
-        return similarity_by_patch, token_index_by_patch, frame_similarity_scores
+        return similarity_by_patch, token_index_by_patch, token_patch_type_by_patch
 
     @staticmethod # guoyansong
-    def _compute_frame_similarity_scores(similarity_by_patch, token_patch_type_by_patch, patch_num, device):
+    def _compute_frame_similarity_scores(similarity_by_patch, token_patch_type_by_patch, patch_num, device, similarity_threshold):
         """
-        计算每个frame的相似度得分（所有patch相似度的平均值）
+        计算每个frame的相似度得分(大于阈值的token个数)
         
         Args:
             similarity_by_patch (torch.Tensor): 每个patch的相似度，按patch类型排列
             token_patch_type_by_patch (torch.Tensor): image token 在frame中的相对位置
             patch_num (int): 每个frame的patch数量
             device: 设备
+            similarity_threshold (float): 相似度阈值
             
         Returns:
-            frame_similarity_scores (torch.Tensor): 每个frame的相似度得分
+            frame_similarity_scores (torch.Tensor): 每个frame中大于阈值的token个数
         """
         bsz, seq_len = similarity_by_patch.shape
         num_frames = seq_len // patch_num
@@ -358,58 +446,45 @@ class FrameFusion(nn.Module):
                 valid_similarities = similarity_by_patch[0, valid_indices]
                 frame_similarities[:valid_frames, patch_idx] = valid_similarities
         
-        # 对每个frame计算平均相似度（排除-2的无效值）
-        # 使用向量化操作计算所有frame的平均值
+        # 计算每个frame中大于merge阈值的token个数
+        # 使用向量化操作计算所有frame的阈值统计
         valid_mask = frame_similarities != -2
         
-        # 将无效值设为0，并计算每个frame的有效patch数量
-        frame_similarities_masked = frame_similarities.clone()
-        frame_similarities_masked[~valid_mask] = 0.0
-        
-        # 计算每个frame的有效patch数量
-        valid_counts = valid_mask.sum(dim=1).float()
-        
-        # 计算每个frame的相似度总和
-        frame_sums = frame_similarities_masked.sum(dim=1)
-        
-        # 计算平均值，避免除零
-        frame_similarity_scores = torch.where(
-            valid_counts > 0,
-            frame_sums / valid_counts,
-            torch.zeros_like(frame_sums)
-        )
+        # 计算每个frame中大于阈值的token个数
+        above_threshold_mask = (frame_similarities > similarity_threshold) & valid_mask
+        frame_similarity_scores = above_threshold_mask.sum(dim=1).float() / patch_num
                 
         return frame_similarity_scores
 
-    @staticmethod # guoyansong
-    def _segment_frames_by_similarity(frame_similarity_scores, segment_threshold):
-        """
-        基于frame相似度得分将frames划分为segments
+    # @staticmethod # guoyansong
+    # def _segment_frames_by_similarity(frame_similarity_scores, segment_threshold):
+    #     """
+    #     基于frame相似度得分将frames划分为segments
         
-        Args:
-            frame_similarity_scores (torch.Tensor): 每个frame的相似度得分
-            segment_threshold (float): 分割阈值，当相似度得分小于此值时进行分割
+    #     Args:
+    #         frame_similarity_scores (torch.Tensor): 每个frame的相似度得分
+    #         segment_threshold (float): 分割阈值，当相似度得分小于此值时进行分割
             
-        Returns:
-            segments (list): 每个segment包含的frame indices列表
-        """
-        segments = []
-        current_segment = []
+    #     Returns:
+    #         segments (list): 每个segment包含的frame indices列表
+    #     """
+    #     segments = []
+    #     current_segment = []
         
-        for frame_idx, score in enumerate(frame_similarity_scores):
-            if score < segment_threshold and len(current_segment) > 0:
-                # 当前frame相似度低于阈值且已有segment，开始新segment
-                segments.append(current_segment)
-                current_segment = [frame_idx]
-            else:
-                # 继续当前segment
-                current_segment.append(frame_idx)
+    #     for frame_idx, score in enumerate(frame_similarity_scores):
+    #         if score < segment_threshold and len(current_segment) > 0:
+    #             # 当前frame相似度低于阈值且已有segment，开始新segment
+    #             segments.append(current_segment)
+    #             current_segment = [frame_idx]
+    #         else:
+    #             # 继续当前segment
+    #             current_segment.append(frame_idx)
         
-        # 添加最后一个segment
-        if len(current_segment) > 0:
-            segments.append(current_segment)
+    #     # 添加最后一个segment
+    #     if len(current_segment) > 0:
+    #         segments.append(current_segment)
             
-        return segments
+    #     return segments
 
     def _apply_cdpruner_to_segments(self, hidden_states, last_layer_attention_avg_image, image_token_start_index, image_token_length, segments, patch_num):
         """
