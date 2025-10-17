@@ -67,6 +67,8 @@ def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
         )
         hidden_states = residual + hidden_states
 
+        # =========== guoyansong 从第6层开始剪枝
+        # if self.self_attn.layer_idx >= 6:
         ### start token merging or fastv after attention
         hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask, self_attn_weights)
         ### end token merging or fastv after attention

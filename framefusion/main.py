@@ -88,7 +88,7 @@ class FrameFusion(nn.Module):
             patch_num: 每帧的 token 数量 (int)
             image_token_start_index, image_token_end_index: image token 的区间 [start, end)
             seq_len: hidden_states 的总 token 数
-            threshold: 低于此阈值时视为 segment 边界
+            threshold: 低于此mergetoken概率阈值时视为 segment 边界
         Returns:
             segment_id_tensor: (1, seq_len) 形状的 tensor，非图像 token 为 -1
         """
@@ -265,15 +265,16 @@ class FrameFusion(nn.Module):
             # 下面把求相似度的平均值 改成 大于merge阈值的token个数
             if self.frame_segment is False: # 保证只在layer0做一次segment
                 frame_similarity_scores = FrameFusion._compute_frame_similarity_scores(
-                    similarity_by_patch, token_patch_type_by_patch, self.patch_num, device, 0.6
+                    similarity_by_patch, token_patch_type_by_patch, self.patch_num, device, self.similarity_lower_bound
                 )
                 # guoyansong 基于frame分段结果，创建segment mask ================= 本函数只执行一次，即只在layer 0 就分好segment
-                self.segment_hidden_states_mask = self.get_segment_id_tensor(frame_similarity_scores, self.patch_num, self.image_token_start_index, self.image_token_end_index, q_len, 0.4, device)
+                frame_segment_threshold = 0.4
+                self.segment_hidden_states_mask = self.get_segment_id_tensor(frame_similarity_scores, self.patch_num, self.image_token_start_index, self.image_token_end_index, q_len, frame_segment_threshold, device)
                 self.frame_segment = True
 
-            frame_token_num = torch.sum(self.patch_type != TEXT_TOKEN).item() # image token总量
+            frame_token_num = torch.sum(self.patch_type != TEXT_TOKEN).item() # 当前layer的image token总量
             merge_index_by_patch = torch.where(similarity_by_patch >= self.similarity_lower_bound)[1] # self.similarity_lower_bound：merging的阈值
-            above_k_ratio = merge_index_by_patch.shape[0] / frame_token_num # mergeing操作剪枝的比率
+            above_k_ratio = merge_index_by_patch.shape[0] / frame_token_num # 当前layer的mergeing操作剪枝的比率
             # 只在decoder layer0做一次mergeing操作
             if above_k_ratio < sparsity_upper_bound: # mergeing没有达到了目标剪枝率，后续继续做pruning
                 self.sparsity_list.append(above_k_ratio) #记录当前decoder layer的剪枝率
@@ -668,6 +669,32 @@ def cosine_similarity(mat1, mat2):
     norm_vec1 = torch.norm(mat1, dim=-1)
     norm_vec2 = torch.norm(mat2, dim=-1)
     return dot_product / (norm_vec1 * norm_vec2)
+
+# guoyansong : 避免矩阵过大
+# def cosine_similarity(mat1: torch.Tensor, mat2: torch.Tensor, eps: float = 1e-8, chunk_size: int = 64):
+#     """
+#     Compute cosine similarity between mat1 and mat2 along the last dimension.
+#     mat1, mat2: [B, N, D] or [N, D]
+#     """
+#     # 确保类型一致
+#     assert mat1.shape == mat2.shape, "mat1 and mat2 must have the same shape"
+
+#     # 分块计算以降低显存占用
+#     if chunk_size is not None:
+#         results = []
+#         for i in range(0, mat1.shape[-2], chunk_size):
+#             m1 = mat1[:, i:i+chunk_size, ...] if mat1.ndim == 3 else mat1[i:i+chunk_size]
+#             m2 = mat2[:, i:i+chunk_size, ...] if mat2.ndim == 3 else mat2[i:i+chunk_size]
+#             dot = torch.sum(m1 * m2, dim=-1)
+#             norm1 = torch.norm(m1, dim=-1)
+#             norm2 = torch.norm(m2, dim=-1)
+#             results.append(dot / (norm1 * norm2 + eps))
+#         return torch.cat(results, dim=-1)
+#     else:
+#         dot_product = torch.sum(mat1 * mat2, dim=-1)
+#         norm_vec1 = torch.norm(mat1, dim=-1)
+#         norm_vec2 = torch.norm(mat2, dim=-1)
+#         return dot_product / (norm_vec1 * norm_vec2 + eps)
 
 def find_contigious_latter_index(index_tensor: torch.LongTensor) -> torch.Tensor:
     """
