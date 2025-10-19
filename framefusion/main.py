@@ -193,40 +193,41 @@ class FrameFusion(nn.Module):
             # 计算 global prune_keep_ratio
             prune_keep_ratio = 1 - pruning_ratio
 
-            for seg_id in segment_ids:
-                # 找到当前 segment 的所有 token 的位置
-                seg_positions = (mask == seg_id).nonzero(as_tuple=True)[0]
-                # 起始位置 = 最小的索引
-                start_idx = seg_positions[0].item()
-                # 当前 segment 的 token 数量
-                token_count = seg_positions.numel()
-                # 要保留的数量 = token_count * 保留率
-                retain_num = int(token_count * prune_keep_ratio)
+            # ============== segment-based cdprune
+            # for seg_id in segment_ids:
+            #     # 找到当前 segment 的所有 token 的位置
+            #     seg_positions = (mask == seg_id).nonzero(as_tuple=True)[0]
+            #     # 起始位置 = 最小的索引
+            #     start_idx = seg_positions[0].item()
+            #     # 当前 segment 的 token 数量
+            #     token_count = seg_positions.numel()
+            #     # 要保留的数量 = token_count * 保留率
+            #     retain_num = int(token_count * prune_keep_ratio)
 
-                segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
-            # 打印
-            # for seg_id, start_idx, token_count, retain_num in segment_keep_info:
-            #     print(f"Segment {seg_id}: start={start_idx}, count={token_count}, keep={retain_num}")
+            #     segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
+            # # 打印
+            # # for seg_id, start_idx, token_count, retain_num in segment_keep_info:
+            # #     print(f"Segment {seg_id}: start={start_idx}, count={token_count}, keep={retain_num}")
 
-            # 遍历segment，分别cdpruner
-            top_attention_rank_index = []
-            for _, start_idx, token_count, retain_num in segment_keep_info:
-                top_attention_rank_index.append(
-                    cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
-                                last_layer_attention_avg[:, start_idx:start_idx+token_count], 
-                                retain_num)
-                                + start_idx
-                )
-            top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
+            # # 遍历segment，分别cdpruner
+            # top_attention_rank_index = []
+            # for _, start_idx, token_count, retain_num in segment_keep_info:
+            #     top_attention_rank_index.append(
+            #         cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
+            #                     last_layer_attention_avg[:, start_idx:start_idx+token_count], 
+            #                     retain_num)
+            #                     + start_idx
+            #     )
+            # top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
             
             # ====== CDPruner prune策略
             # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
-            # top_attention_rank_index = (
-            #     cdpruner(hidden_states[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length, :],
-            #                     last_layer_attention_avg[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length], 
-            #                     round(image_token_pruning_length * (1 - pruning_ratio)))
-            #                     + image_token_pruning_start_index
-            # )
+            top_attention_rank_index = (
+                cdpruner(hidden_states[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length, :],
+                                last_layer_attention_avg[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length], 
+                                round(image_token_pruning_length * prune_keep_ratio))
+                                + image_token_pruning_start_index
+            )
             
             
 
