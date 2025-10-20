@@ -6,6 +6,57 @@ import pdb
 
 TEXT_TOKEN = -1
 IGNORE_TOKEN = -2
+"""
+segment_keep_info: seg_id, start_idx, token_count, retain_num
+"""
+def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_features, last_layer_attention_avg_image, topk_image_token_num):
+    B, N, D = image_features.shape
+    device = image_features.device
+    segment_mask = segment_mask[segment_mask!=-1] # 去掉 -1即文本对应的mask，只留下image token对应的mask
+    
+    # 求解 DPP 矩阵
+    # [CDPruner] Calculate cosine similarity
+    image_normalized = image_features / image_features.norm(dim=-1, keepdim=True) # (B, N, D)
+    image_normalized = image_normalized.float() # (B, N, D)
+    similarity = torch.matmul(image_normalized, image_normalized.transpose(1, 2)) # (B, N, N)
+    
+    relevance = (-last_layer_attention_avg_image) # (B, N)
+    relevance = (relevance - relevance.min() + 1e-6) / (relevance.max() - relevance.min()) # (B, N)
+    kernel = relevance.unsqueeze(2) * similarity * relevance.unsqueeze(1) # (B, N, N)
+
+    selected_global_idx = []  # 存所有选中的全局token idx
+    for seg_id, start_idx, token_count, topk_seg in segment_keep_info:
+        # 1. 找到当前segment对应的index
+        seg_idx = (segment_mask == seg_id).nonzero(as_tuple=True)[0]
+
+        # 2. 切割子矩阵
+        kernel_seg = kernel[:, seg_idx][:, :, seg_idx]  # (B, seg_len, seg_len)
+
+        # 3. 初始化
+        seg_len = kernel_seg.shape[-1]
+        cis = torch.zeros((topk_seg, B, seg_len), device=device)
+        di2s = torch.diagonal(kernel_seg, dim1=1, dim2=2).clone()
+        select_idx_seg = torch.empty((topk_seg, B), dtype=torch.long, device=device)
+
+        # 4. DPP 采样（Fast MAP）
+        for i in range(topk_seg):
+            j = torch.argmax(di2s, dim=-1)
+            select_idx_seg[i] = j
+
+            eis = (kernel_seg[torch.arange(B), j] - torch.einsum('tb,tbn->bn', cis[:i, torch.arange(B), j], cis[:i])) \
+                / torch.sqrt(di2s[torch.arange(B), j]).unsqueeze(-1)
+            cis[i, :, :] = eis
+            di2s -= torch.square(eis)
+            di2s[torch.arange(B), j] = -float('inf')
+        # 5. 局部idx -> 全局idx
+        select_idx_global = seg_idx[select_idx_seg.t()] + start_idx  # (B, topk_seg)
+        selected_global_idx.append(select_idx_global)
+
+    # 6. 拼接所有 segment 的选择结果
+    selected_global_idx = torch.cat(selected_global_idx, dim=1)  # (B, total_topk)
+
+    # 返回第一个 batch 的选择结果 (和原来一致)
+    return selected_global_idx[0]
 
 # [CDPruner] Generate index masks using conditional DPP
 def cdpruner(image_features, last_layer_attention_avg_image, topk_image_token_num):
@@ -267,6 +318,7 @@ class FrameFusion(nn.Module):
 
 
             prune_keep_ratio = 1 - pruning_ratio
+            ratio_extra = 0.1 # R_extra
             for seg_id in segment_ids:
                 # 找到当前 segment 的所有 token 的位置
                 seg_positions = (mask == seg_id).nonzero(as_tuple=True)[0]
@@ -274,32 +326,36 @@ class FrameFusion(nn.Module):
                 start_idx = seg_positions[0].item()
                 # 当前 segment 的 token 数量
                 token_count = seg_positions.numel()
+
                 # 要保留的数量 = token_count * 保留率
-                retain_num = int(token_count * prune_keep_ratio)
-                segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
-            # 遍历segment，分别cdpruner
-            top_attention_rank_index = []
-            for seg_id, start_idx, token_count, retain_num in segment_keep_info:
-                ratio_extra = 0.1 # R_extra
+                # retain_num = int(token_count * prune_keep_ratio)
                 seg_keep_ratio = prune_keep_ratio + ratio_extra * self.seg_MV[seg_id] # guoyansong：参考MMG_Vid 公式（6）
                 seg_keep_ratio = torch.clamp(seg_keep_ratio, min=0.05, max=0.95) # 避免越界，确保seg_keep_ratio 落在 [0.05, 0.95] 区间内
-                segment_retain_num = int(token_count * seg_keep_ratio)
-                top_attention_rank_index.append(
-                    cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
-                                last_layer_attention_avg[:, start_idx:start_idx+token_count], 
-                                segment_retain_num)
-                                + start_idx
-                )
-            top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
+                retain_num = int(token_count * seg_keep_ratio)
+                segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
+
+            # 遍历segment，分别cdpruner
+            # top_attention_rank_index = []
+            # for seg_id, start_idx, token_count, retain_num in segment_keep_info:
+            #     top_attention_rank_index.append(
+            #         cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
+            #                     last_layer_attention_avg[:, start_idx:start_idx+token_count], 
+            #                     retain_num)
+            #                     + start_idx
+            #     )
+            # top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
             
             # ====== CDPruner prune策略
             # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
-            # top_attention_rank_index = (
-            #     cdpruner(hidden_states[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length, :],
-            #                     last_layer_attention_avg[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length], 
-            #                     round(image_token_pruning_length * (1 - pruning_ratio)))
-            #                     + image_token_pruning_start_index
-            # )
+            top_attention_rank_index = (
+                global_cdpruner_segment_prune(segment_keep_info, 
+                                self.segment_hidden_states_mask[0],
+                                # 注意！！！下面两条TODO:修改为self.segment_hidden_states_mask,原来基于self.image_token_end_index的写法有问题，因为经历剪枝后self.image_token_end_index没有及时更新
+                                hidden_states[:,(self.segment_hidden_states_mask!=-1)[0] , :],
+                                last_layer_attention_avg[:, (self.segment_hidden_states_mask!=-1)[0]], 
+                                round(image_token_pruning_length * (1 - pruning_ratio)))
+                                # + image_token_pruning_start_index，在函数内部已经实现了，这里不用加相对位置了
+            )
             
             
 
