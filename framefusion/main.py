@@ -169,7 +169,7 @@ class FrameFusion(nn.Module):
         device = hidden_states.device    
         # 浅层做 pruning， 深层做 merging
         # pruning
-        if q_len >1 and self.finish_merging == True and self.finish_pruning == False:
+        if q_len >1:
 
             def to_int(x):
                 return x.item() if isinstance(x, torch.Tensor) else int(x)
@@ -254,8 +254,8 @@ class FrameFusion(nn.Module):
                 attention_mask = attention_mask[:,:,keep_indexs,:][:,:,:,keep_indexs]
             # self.finish_pruning = True
 
-        # merging
-        if q_len >1 and (not self.finish_merging):
+        # # merging
+        # if q_len >1 and (not self.finish_merging):
 
             # align devices
             self.patch_type = self.patch_type.to(device)
