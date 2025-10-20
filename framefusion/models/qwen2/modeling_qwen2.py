@@ -43,12 +43,11 @@ def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
                 into the model
         """
         ### start token merging at layer 0 before attention
-        # pdb.set_trace()
-        # if self.self_attn.layer_idx == 0:
-        #     self.framefusion.init_segment()
-        #     hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask)
+        if self.self_attn.layer_idx == 0:
+            self.framefusion.init_segment()
+            hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask)
         ### end token merging at layer 0 before attention
-        
+
         # pdb.set_trace()
         residual = hidden_states
 
@@ -172,8 +171,8 @@ def Qwen2SdpaAttention_merge_then_prune_by_cost_forward(
     is_causal = True if causal_mask is None and q_len > 1 else False
     
     ### start storing attn_weights if needed
-    attn_weights = None
-    if (q_len > 1) and (self.framefusion.finish_merging) and (not self.framefusion.finish_pruning):        
+    attn_weights = None # guoyansong: self.layer_idx % 7 == 0 只在prune layer计算attn weights，避免多余计算
+    if (q_len > 1) and (self.framefusion.finish_merging) and (not self.framefusion.finish_pruning) and self.layer_idx % 7 == 0:   
         attn_weights = scaled_dot_product_attention(
             query_states,
             key_states,

@@ -169,8 +169,8 @@ class FrameFusion(nn.Module):
         device = hidden_states.device    
         # 浅层做 pruning， 深层做 merging
         # pruning
-        if q_len >1:
-
+        
+        if q_len >1 and self.finish_merging == True and self.finish_pruning == False:
             def to_int(x):
                 return x.item() if isinstance(x, torch.Tensor) else int(x)
             image_token_pruning_start_index = to_int(self.image_token_start_index)
@@ -255,7 +255,7 @@ class FrameFusion(nn.Module):
             # self.finish_pruning = True
 
         # # merging
-        # if q_len >1 and (not self.finish_merging):
+        if q_len >1 and (not self.finish_merging):
 
             # align devices
             self.patch_type = self.patch_type.to(device)
@@ -289,24 +289,24 @@ class FrameFusion(nn.Module):
             self.finish_merging = True
 
             # ===================== 做 mergeing 
-            hidden_states, token_mask = self.merge_tokens_and_get_mask(hidden_states, similarity_by_patch, token_index_by_patch, merge_index_by_patch)
+            # hidden_states, token_mask = self.merge_tokens_and_get_mask(hidden_states, similarity_by_patch, token_index_by_patch, merge_index_by_patch)
             
             # ===================== guoyansong 基于frame相似度进行segmentation
             # segments = self._segment_frames_by_similarity(frame_similarity_scores, self.segment_threshold)
             # self.frame_segments = segments  # 保存segments供后续pruning使用
 
             # 基于merge结果，更新segment mask
-            self.segment_hidden_states_mask = self.segment_hidden_states_mask[token_mask].reshape(bsz, -1)
+            # self.segment_hidden_states_mask = self.segment_hidden_states_mask[token_mask].reshape(bsz, -1)
 
             # here only bsz=1
             # update patch type
-            self.patch_type = self.patch_type.to(device)[token_mask].reshape(bsz, -1)
-            hidden_states = hidden_states[token_mask, :].reshape(bsz, -1, hidden_size)
+            # self.patch_type = self.patch_type.to(device)[token_mask].reshape(bsz, -1)
+            # hidden_states = hidden_states[token_mask, :].reshape(bsz, -1, hidden_size)
 
-            position_embeddings = self.position_embedding_handler_at_merging(position_embeddings, token_mask)
+            # position_embeddings = self.position_embedding_handler_at_merging(position_embeddings, token_mask)
 
-            if attention_mask is not None:
-                attention_mask = attention_mask[:,:,token_mask[0],:][:,:,:,token_mask[0]]
+            # if attention_mask is not None:
+            #     attention_mask = attention_mask[:,:,token_mask[0],:][:,:,:,token_mask[0]]
 
         return hidden_states, position_embeddings, attention_mask
 
