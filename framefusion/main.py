@@ -1,6 +1,7 @@
 from typing import List
 import torch
 from torch import nn
+import torch.nn.functional as F
 import pdb
 
 TEXT_TOKEN = -1
@@ -59,6 +60,81 @@ def cdpruner(image_features, last_layer_attention_avg_image, topk_image_token_nu
     # index_masks.scatter_(1, select_idx, True)
     
     return select_idx.t()[0] # 去掉batch维度
+
+def segment_dynamic_prune_ratio1(segment_mask, hidden_states):
+    segment_ids = segment_mask[segment_mask >= 0].unique().tolist()  # 所有有效 segment id
+    segment_keep_info = []  # 存储结果 [(seg_id, start_idx, token_count, keep_num), ...]
+    # 计算 global prune_keep_ratio
+    segment_feat = []
+    for seg_id in segment_ids:
+        # 找到当前 segment 的所有 token 的位置
+        seg_positions = (segment_mask == seg_id).nonzero(as_tuple=True)[0]
+        seg_feat = torch.mean(hidden_states[0, seg_positions, :], dim=0)
+        segment_feat.append(seg_feat)
+    segment_feat = torch.stack(segment_feat, dim=0)
+    N, D = segment_feat.shape
+    k = 0.5
+    prefix_sum = torch.cumsum(segment_feat, dim=0)  # [N, D]
+    suffix_sum = torch.flip(torch.cumsum(torch.flip(segment_feat, [0]), dim=0), [0])
+    seg_MV = torch.zeros(N, device=segment_feat.device)
+    for i in range(N):
+        seg = segment_feat[i]
+        # 1. 前面均值 g_sel
+        if i > 0:
+            g_sel = prefix_sum[i - 1] / i
+            a1 = F.cosine_similarity(seg, g_sel, dim=0)
+        else:
+            a1 = 0.0  # 没有前面
+        # 2. 后面均值 g_rem
+        if i < N - 1:
+            g_rem = suffix_sum[i + 1] / (N - i - 1)
+            a2 = F.cosine_similarity(seg, g_rem, dim=0)
+        else:
+            a2 = 0.0  # 没有后面
+
+        # 3. 计算 MV
+        seg_MV[i] = k * a1 + (1 - k) * (1 - a2)
+        # TODO: 这里超参数k可以根据前面frame的数量改成自动调节
+    seg_MV = (seg_MV - seg_MV.mean()) / (seg_MV.std(unbiased=False) + 1e-8)
+    return seg_MV
+# 矩阵法，速度快，但和segment_dynamic_prune_ratio1结果不太一样，先用1
+def segment_dynamic_prune_ratio2(segment_mask, hidden_states):
+    segment_ids = segment_mask[segment_mask >= 0].unique().tolist()  # 所有有效 segment id
+    segment_keep_info = []  # 存储结果 [(seg_id, start_idx, token_count, keep_num), ...]
+    # 计算 global prune_keep_ratio
+    segment_feat = []
+    for seg_id in segment_ids:
+        # 找到当前 segment 的所有 token 的位置
+        seg_positions = (segment_mask == seg_id).nonzero(as_tuple=True)[0]
+        seg_feat = torch.mean(hidden_states[0, seg_positions, :], dim=0)
+        segment_feat.append(seg_feat)
+    segment_feat = torch.stack(segment_feat, dim=0)
+    num_segs = segment_feat.size(0)
+    k = 0.5  # 可根据需要调整k值
+
+    # 1. 计算每个seg前面所有特征的均值g_sel
+    # 生成前缀掩码：mask[i][j] = 1 表示seg j在seg i前面（j < i）
+    prefix_mask = torch.tril(torch.ones(num_segs, num_segs, device=segment_feat.device), diagonal=-1).to(dtype=segment_feat.dtype)
+    # 计算前缀均值（自动忽略无前置seg的情况）
+    g_sel = (prefix_mask @ segment_feat) / (prefix_mask.sum(dim=1, keepdim=True) + 1e-8)  # [N, 3584]
+
+    # 2. 计算每个seg后面所有特征的均值g_rem
+    # 生成后缀掩码：mask[i][j] = 1 表示seg j在seg i后面（j > i）
+    suffix_mask = torch.triu(torch.ones(num_segs, num_segs, device=segment_feat.device), diagonal=1).to(dtype=segment_feat.dtype)
+    # 计算后缀均值（自动忽略无后置seg的情况）
+    g_rem = (suffix_mask @ segment_feat) / (suffix_mask.sum(dim=1, keepdim=True) + 1e-8)  # [N, 3584]
+
+    # 3. 计算余弦相似度（直接使用F.cosine_similarity）
+    # 注意：cosine_similarity需要输入为相同形状的张量，dim=1指定在特征维度计算
+    a1 = F.cosine_similarity(segment_feat, g_sel, dim=1)  # [N,]，seg_feat与g_sel的余弦相似度
+    a2 = F.cosine_similarity(segment_feat, g_rem, dim=1)  # [N,]，seg_feat与g_rem的余弦相似度
+
+    # 计算MV
+    seg_MV = k * a1 + (1 - k) * (1 - a2)  # [N,]，每个seg对应的MV特征
+
+    # TODO: 这里超参数k可以根据前面frame的数量改成自动调节
+    seg_MV = (seg_MV - seg_MV.mean()) / (seg_MV.std(unbiased=False) + 1e-8)
+    return seg_MV
 
 class FrameFusion(nn.Module):
     def __init__(self, cost=0.3, similarity_lower_bound=0.6, ratio_lower_bound=0.1, segment_threshold=0.5):
@@ -188,8 +264,9 @@ class FrameFusion(nn.Module):
             segment_ids = mask[mask >= 0].unique().tolist()  # 所有有效 segment id
             segment_keep_info = []  # 存储结果 [(seg_id, start_idx, token_count, keep_num), ...]
             # 计算 global prune_keep_ratio
-            prune_keep_ratio = 1 - pruning_ratio
 
+
+            prune_keep_ratio = 1 - pruning_ratio
             for seg_id in segment_ids:
                 # 找到当前 segment 的所有 token 的位置
                 seg_positions = (mask == seg_id).nonzero(as_tuple=True)[0]
@@ -199,19 +276,18 @@ class FrameFusion(nn.Module):
                 token_count = seg_positions.numel()
                 # 要保留的数量 = token_count * 保留率
                 retain_num = int(token_count * prune_keep_ratio)
-
                 segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
-            # 打印
-            # for seg_id, start_idx, token_count, retain_num in segment_keep_info:
-            #     print(f"Segment {seg_id}: start={start_idx}, count={token_count}, keep={retain_num}")
-
             # 遍历segment，分别cdpruner
             top_attention_rank_index = []
-            for _, start_idx, token_count, retain_num in segment_keep_info:
+            for seg_id, start_idx, token_count, retain_num in segment_keep_info:
+                ratio_extra = 0.1 # R_extra
+                seg_keep_ratio = prune_keep_ratio + ratio_extra * self.seg_MV[seg_id] # guoyansong：参考MMG_Vid 公式（6）
+                seg_keep_ratio = torch.clamp(seg_keep_ratio, min=0.05, max=0.95) # 避免越界，确保seg_keep_ratio 落在 [0.05, 0.95] 区间内
+                segment_retain_num = int(token_count * seg_keep_ratio)
                 top_attention_rank_index.append(
                     cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
                                 last_layer_attention_avg[:, start_idx:start_idx+token_count], 
-                                retain_num)
+                                segment_retain_num)
                                 + start_idx
                 )
             top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
@@ -271,6 +347,11 @@ class FrameFusion(nn.Module):
                 frame_segment_threshold = 0.4
                 self.segment_hidden_states_mask = self.get_segment_id_tensor(frame_similarity_scores, self.patch_num, self.image_token_start_index, self.image_token_end_index, q_len, frame_segment_threshold, device)
                 self.frame_segment = True
+
+            # ======================= 计算 dynamic segment ratio ==================================
+            self.seg_MV = segment_dynamic_prune_ratio1(self.segment_hidden_states_mask[0], hidden_states)
+            # =================================================================================
+
 
             frame_token_num = torch.sum(self.patch_type != TEXT_TOKEN).item() # 当前layer的image token总量
             merge_index_by_patch = torch.where(similarity_by_patch >= self.similarity_lower_bound)[1] # self.similarity_lower_bound：merging的阈值
