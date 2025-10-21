@@ -49,7 +49,7 @@ def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_feature
             di2s -= torch.square(eis)
             di2s[torch.arange(B), j] = -float('inf')
         # 5. 局部idx -> 全局idx
-        select_idx_global = seg_idx[select_idx_seg.t()] + start_idx  # (B, topk_seg)
+        select_idx_global = seg_idx[select_idx_seg.t()]  # (B, topk_seg)
         selected_global_idx.append(select_idx_global)
 
     # 6. 拼接所有 segment 的选择结果
@@ -354,7 +354,7 @@ class FrameFusion(nn.Module):
                                 hidden_states[:,(self.segment_hidden_states_mask!=-1)[0] , :],
                                 last_layer_attention_avg[:, (self.segment_hidden_states_mask!=-1)[0]], 
                                 round(image_token_pruning_length * (1 - pruning_ratio)))
-                                # + image_token_pruning_start_index，在函数内部已经实现了，这里不用加相对位置了
+                                + image_token_pruning_start_index
             )
             
             
