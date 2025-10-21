@@ -328,10 +328,13 @@ class FrameFusion(nn.Module):
                 token_count = seg_positions.numel()
 
                 # 要保留的数量 = token_count * 保留率
-                # retain_num = int(token_count * prune_keep_ratio)
-                seg_keep_ratio = prune_keep_ratio + ratio_extra * self.seg_MV[seg_id] # guoyansong：参考MMG_Vid 公式（6）
-                seg_keep_ratio = torch.clamp(seg_keep_ratio, min=0.05, max=0.95) # 避免越界，确保seg_keep_ratio 落在 [0.05, 0.95] 区间内
-                retain_num = int(token_count * seg_keep_ratio)
+                retain_num = int(token_count * prune_keep_ratio)
+
+                # ======================= dynamic ratio
+                # seg_keep_ratio = prune_keep_ratio + ratio_extra * self.seg_MV[seg_id] # guoyansong：参考MMG_Vid 公式（6）
+                # seg_keep_ratio = torch.clamp(seg_keep_ratio, min=0.05, max=0.95) # 避免越界，确保seg_keep_ratio 落在 [0.05, 0.95] 区间内
+                # retain_num = int(token_count * seg_keep_ratio)
+
                 segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
 
             # 遍历segment，分别cdpruner
