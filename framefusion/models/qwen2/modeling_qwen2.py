@@ -179,7 +179,7 @@ def Qwen2SdpaAttention_merge_then_prune_by_cost_forward(
             query_states,
             key_states,
             value_states, # framefusion源码的num = 1，即用倒数最后1个text token做query计算attn weights
-            num=question_len, # num表示计算attn weight的query
+            num=1, # num表示计算attn weight的query
             attn_mask=None,
             dropout_p=self.attention_dropout if self.training else 0.0,
             is_causal=is_causal,
