@@ -172,7 +172,7 @@ def Qwen2SdpaAttention_merge_then_prune_by_cost_forward(
     ### start storing attn_weights if needed
     attn_weights = None
     question_len = (self.framefusion.segment_hidden_states_mask[0].flip(0) == -1).cumprod(0).sum().item() # guoyasnong:这里改成用question做query计算attn weights再取平均
-    if (q_len > 1) and (self.framefusion.finish_merging) and (not self.framefusion.finish_pruning):        
+    if (q_len > 1) and (self.framefusion.finish_merging) and (not self.framefusion.finish_pruning):
         attn_weights = scaled_dot_product_attention(
             query_states,
             key_states,
