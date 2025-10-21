@@ -51,6 +51,9 @@ def scaled_dot_product_attention(query, key, value, num=1, attn_mask=None, dropo
         attn_weight = query@ key.transpose(-2, -1) * scale_factor
         attn_weight += attn_bias
         attn_weight = torch.softmax(attn_weight, dim=-1)
+        if(num > 1): # guoyansong: 这里改成用question做query计算attn weights再取平均
+            attn_weight = attn_weight.mean(-2, keepdim=True)
+            attn_weight
         attn_weight=attn_weight
         attn_weight = torch.dropout(attn_weight, dropout_p, train=True)
 
