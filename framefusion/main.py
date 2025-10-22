@@ -328,36 +328,36 @@ class FrameFusion(nn.Module):
                 token_count = seg_positions.numel()
 
                 # 要保留的数量 = token_count * 保留率
-                retain_num = int(token_count * prune_keep_ratio)
+                # retain_num = int(token_count * prune_keep_ratio)
 
                 # ======================= dynamic ratio
-                # seg_keep_ratio = prune_keep_ratio + ratio_extra * self.seg_MV[seg_id] # guoyansong：参考MMG_Vid 公式（6）
-                # seg_keep_ratio = torch.clamp(seg_keep_ratio, min=0.05, max=0.95) # 避免越界，确保seg_keep_ratio 落在 [0.05, 0.95] 区间内
-                # retain_num = int(token_count * seg_keep_ratio)
+                seg_keep_ratio = prune_keep_ratio + ratio_extra * self.seg_MV[seg_id] # guoyansong：参考MMG_Vid 公式（6）
+                seg_keep_ratio = torch.clamp(seg_keep_ratio, min=0.05, max=0.95) # 避免越界，确保seg_keep_ratio 落在 [0.05, 0.95] 区间内
+                retain_num = int(token_count * seg_keep_ratio)
                 segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
 
             # 遍历segment，分别cdpruner
-            top_attention_rank_index = []
-            for seg_id, start_idx, token_count, retain_num in segment_keep_info:
-                top_attention_rank_index.append(
-                    cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
-                                last_layer_attention_avg[:, start_idx:start_idx+token_count], 
-                                retain_num)
-                                + start_idx
-                )
-            top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
+            # top_attention_rank_index = []
+            # for seg_id, start_idx, token_count, retain_num in segment_keep_info:
+            #     top_attention_rank_index.append(
+            #         cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
+            #                     last_layer_attention_avg[:, start_idx:start_idx+token_count], 
+            #                     retain_num)
+            #                     + start_idx
+            #     )
+            # top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
             
-            # ====== CDPruner prune策略
+            # ====== CDPruner prune策略  kernel matrix segment
             # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
-            # top_attention_rank_index = (
-            #     global_cdpruner_segment_prune(segment_keep_info, 
-            #                     self.segment_hidden_states_mask[0],
-            #                     # 注意！！！下面两条TODO:修改为self.segment_hidden_states_mask,原来基于self.image_token_end_index的写法有问题，因为经历剪枝后self.image_token_end_index没有及时更新
-            #                     hidden_states[:,(self.segment_hidden_states_mask!=-1)[0] , :],
-            #                     last_layer_attention_avg[:, (self.segment_hidden_states_mask!=-1)[0]], 
-            #                     round(image_token_pruning_length * (1 - pruning_ratio)))
-            #                     + image_token_pruning_start_index
-            # )
+            top_attention_rank_index = (
+                global_cdpruner_segment_prune(segment_keep_info, 
+                                self.segment_hidden_states_mask[0],
+                                # 注意！！！下面两条TODO:修改为self.segment_hidden_states_mask,原来基于self.image_token_end_index的写法有问题，因为经历剪枝后self.image_token_end_index没有及时更新
+                                hidden_states[:,(self.segment_hidden_states_mask!=-1)[0] , :],
+                                last_layer_attention_avg[:, (self.segment_hidden_states_mask!=-1)[0]], 
+                                round(image_token_pruning_length * (1 - pruning_ratio)))
+                                + image_token_pruning_start_index
+            )
             
             
 

@@ -71,7 +71,7 @@ def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
         # if self.self_attn.layer_idx >= 6:
         ### start token merging or fastv after attention
         if self.self_attn.layer_idx >= 7 and self.self_attn.layer_idx % 7 == 0 and self.self_attn.layer_idx < 28:
-            hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask, self_attn_weights, self.self_attn.layer_idx)
+            hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask, self_attn_weights)
         
         ### end token merging or fastv after attention
     
@@ -179,7 +179,7 @@ def Qwen2SdpaAttention_merge_then_prune_by_cost_forward(
             query_states,
             key_states,
             value_states, # framefusion源码的num = 1，即用倒数最后1个text token做query计算attn weights
-            num=1, # num表示计算attn weight的query
+            num=question_len, # num表示计算attn weight的query
             attn_mask=None,
             dropout_p=self.attention_dropout if self.training else 0.0,
             is_causal=is_causal,
