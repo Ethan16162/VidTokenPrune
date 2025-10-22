@@ -339,27 +339,27 @@ class FrameFusion(nn.Module):
                 segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
 
             # 遍历segment，分别cdpruner
-            top_attention_rank_index = []
-            for seg_id, start_idx, token_count, retain_num in segment_keep_info:
-                top_attention_rank_index.append(
-                    cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
-                                last_layer_attention_avg[:, start_idx:start_idx+token_count], 
-                                retain_num)
-                                + start_idx
-                )
-            top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
+            # top_attention_rank_index = []
+            # for seg_id, start_idx, token_count, retain_num in segment_keep_info:
+            #     top_attention_rank_index.append(
+            #         cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
+            #                     last_layer_attention_avg[:, start_idx:start_idx+token_count], 
+            #                     retain_num)
+            #                     + start_idx
+            #     )
+            # top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
             
             # ====== CDPruner prune策略  kernel matrix segment
             # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
-            # top_attention_rank_index = (
-            #     global_cdpruner_segment_prune(segment_keep_info, 
-            #                     self.segment_hidden_states_mask[0],
-            #                     # 注意！！！下面两条TODO:修改为self.segment_hidden_states_mask,原来基于self.image_token_end_index的写法有问题，因为经历剪枝后self.image_token_end_index没有及时更新
-            #                     hidden_states[:,(self.segment_hidden_states_mask!=-1)[0] , :],
-            #                     last_layer_attention_avg[:, (self.segment_hidden_states_mask!=-1)[0]], 
-            #                     round(image_token_pruning_length * (1 - pruning_ratio)))
-            #                     + image_token_pruning_start_index
-            # )
+            top_attention_rank_index = (
+                global_cdpruner_segment_prune(segment_keep_info, 
+                                self.segment_hidden_states_mask[0],
+                                # 注意！！！下面两条TODO:修改为self.segment_hidden_states_mask,原来基于self.image_token_end_index的写法有问题，因为经历剪枝后self.image_token_end_index没有及时更新
+                                hidden_states[:,(self.segment_hidden_states_mask!=-1)[0] , :],
+                                last_layer_attention_avg[:, (self.segment_hidden_states_mask!=-1)[0]], 
+                                round(image_token_pruning_length * (1 - pruning_ratio)))
+                                + image_token_pruning_start_index
+            )
             
             
 
