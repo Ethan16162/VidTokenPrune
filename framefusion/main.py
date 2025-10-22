@@ -196,6 +196,7 @@ class FrameFusion(nn.Module):
         self.segment_threshold = segment_threshold  # 用于frame segmentation的阈值
         self.segment_hidden_states_mask = None
         self.frame_segment = False # 控制只在decoder layer0做segment
+        self.prune_ratio = [0.5, 0.3, 0.3, 0.57]
 
     def init_segment(self):
         self.frame_segment = False # 控制只在decoder layer0做segment
@@ -275,7 +276,7 @@ class FrameFusion(nn.Module):
     ### start token merging at layer 0 before attention
     # 包含了每一个decoder layer 具体做 token merging 和 pruning 的逻辑
     def forward(
-        self, hidden_states, position_embeddings, attention_mask, self_attn_weights=None
+        self, hidden_states, position_embeddings, attention_mask, self_attn_weights=None, layer_idx = 0
     ):
         """
         This is the forward method of the FrameFusion class.
@@ -308,7 +309,8 @@ class FrameFusion(nn.Module):
             last_layer_attention_avg = torch.mean(last_layer_attention, dim=(1,2)) # (B, N)
             # last_layer_attention_avg_image = last_layer_attention_avg[:, image_token_pruning_start_index:image_token_pruning_start_index+image_token_pruning_length]
 
-            pruning_ratio = self._compute_pruning_ratio(self.sparsity_list, self.cost)
+            # pruning_ratio = self._compute_pruning_ratio(self.sparsity_list, self.cost)
+            pruning_ratio = self.prune_ratio[int(layer_idx / 7)] # merge率
 
             # guoyansong 逐segment提取cdpruner剪枝 ==============================
             mask = self.segment_hidden_states_mask[0]  # 变成一维向量，形状 [4503]
@@ -337,27 +339,27 @@ class FrameFusion(nn.Module):
                 segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
 
             # 遍历segment，分别cdpruner
-            # top_attention_rank_index = []
-            # for seg_id, start_idx, token_count, retain_num in segment_keep_info:
-            #     top_attention_rank_index.append(
-            #         cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
-            #                     last_layer_attention_avg[:, start_idx:start_idx+token_count], 
-            #                     retain_num)
-            #                     + start_idx
-            #     )
-            # top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
+            top_attention_rank_index = []
+            for seg_id, start_idx, token_count, retain_num in segment_keep_info:
+                top_attention_rank_index.append(
+                    cdpruner(hidden_states[:, start_idx:start_idx+token_count, :],
+                                last_layer_attention_avg[:, start_idx:start_idx+token_count], 
+                                retain_num)
+                                + start_idx
+                )
+            top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
             
             # ====== CDPruner prune策略  kernel matrix segment
             # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
-            top_attention_rank_index = (
-                global_cdpruner_segment_prune(segment_keep_info, 
-                                self.segment_hidden_states_mask[0],
-                                # 注意！！！下面两条TODO:修改为self.segment_hidden_states_mask,原来基于self.image_token_end_index的写法有问题，因为经历剪枝后self.image_token_end_index没有及时更新
-                                hidden_states[:,(self.segment_hidden_states_mask!=-1)[0] , :],
-                                last_layer_attention_avg[:, (self.segment_hidden_states_mask!=-1)[0]], 
-                                round(image_token_pruning_length * (1 - pruning_ratio)))
-                                + image_token_pruning_start_index
-            )
+            # top_attention_rank_index = (
+            #     global_cdpruner_segment_prune(segment_keep_info, 
+            #                     self.segment_hidden_states_mask[0],
+            #                     # 注意！！！下面两条TODO:修改为self.segment_hidden_states_mask,原来基于self.image_token_end_index的写法有问题，因为经历剪枝后self.image_token_end_index没有及时更新
+            #                     hidden_states[:,(self.segment_hidden_states_mask!=-1)[0] , :],
+            #                     last_layer_attention_avg[:, (self.segment_hidden_states_mask!=-1)[0]], 
+            #                     round(image_token_pruning_length * (1 - pruning_ratio)))
+            #                     + image_token_pruning_start_index
+            # )
             
             
 
@@ -382,7 +384,7 @@ class FrameFusion(nn.Module):
 
             if attention_mask != None:
                 attention_mask = attention_mask[:,:,keep_indexs,:][:,:,:,keep_indexs]
-            self.finish_pruning = True
+            # self.finish_pruning = True
 
         # merging
         if q_len >1 and (not self.finish_merging):
@@ -391,7 +393,8 @@ class FrameFusion(nn.Module):
             self.patch_type = self.patch_type.to(device)
 
             # prefill  ================  计算mergeing 对应的 image token index
-            sparsity_upper_bound = self._compute_pruning_ratio(self.sparsity_list, self.cost) # 计算最终的目标剪枝率
+            # sparsity_upper_bound = self._compute_pruning_ratio(self.sparsity_list, self.cost) # 计算最终的目标剪枝率
+            sparsity_upper_bound = self.prune_ratio[int(layer_idx / 7)] # merge率
             similarity_by_patch, token_index_by_patch, token_patch_type_by_patch = self.compute_similarity_and_token_index_by_patch(hidden_states, self.patch_type, self.patch_num) # only support bsz = 1
             
             # guoyansong 计算每个frame的相似度得分 ==========================
@@ -412,24 +415,31 @@ class FrameFusion(nn.Module):
 
 
             frame_token_num = torch.sum(self.patch_type != TEXT_TOKEN).item() # 当前layer的image token总量
-            merge_index_by_patch = torch.where(similarity_by_patch >= self.similarity_lower_bound)[1] # self.similarity_lower_bound：merging的阈值
-            above_k_ratio = merge_index_by_patch.shape[0] / frame_token_num # 当前layer的mergeing操作剪枝的比率
-            # 只在decoder layer0做一次mergeing操作
-            if above_k_ratio < sparsity_upper_bound: # mergeing没有达到了目标剪枝率，后续继续做pruning
-                self.sparsity_list.append(above_k_ratio) #记录当前decoder layer的剪枝率
-                #经过多layer mergeing后，above_k_ratio不超过阈值
-                if above_k_ratio < self.ratio_lower_bound: 
-                    self.finish_merging = True
-            else:# 仅仅mergeing就达到了目标剪枝率，不需要做pruning了
-                topk_values, topk_indices = torch.topk(similarity_by_patch, int(sparsity_upper_bound*frame_token_num))
-                topk_indices, _ = torch.sort(topk_indices)
-                merge_index_by_patch = topk_indices[0]
 
-                self.finish_merging = True
-                self.finish_pruning = True
+            # ============== 处理极少数的NaN异常数据：替换 NaN 为 -inf
+            similarity_clean = torch.nan_to_num(similarity_by_patch, nan=float('-inf'))
+            values, indices = torch.topk(similarity_clean, int(sparsity_upper_bound * frame_token_num), dim=1)
+            topk_indices, _ = torch.sort(indices)
+            merge_index_by_patch = topk_indices[0]
+
+            # merge_index_by_patch = torch.where(similarity_by_patch >= self.similarity_lower_bound)[1] # self.similarity_lower_bound：merging的阈值
+            # above_k_ratio = merge_index_by_patch.shape[0] / frame_token_num # 当前layer的mergeing操作剪枝的比率
+            # # 只在decoder layer0做一次mergeing操作
+            # if above_k_ratio < sparsity_upper_bound: # mergeing没有达到了目标剪枝率，后续继续做pruning
+            #     self.sparsity_list.append(above_k_ratio) #记录当前decoder layer的剪枝率
+            #     #经过多layer mergeing后，above_k_ratio不超过阈值
+            #     if above_k_ratio < self.ratio_lower_bound: 
+            #         self.finish_merging = True
+            # else:# 仅仅mergeing就达到了目标剪枝率，不需要做pruning了
+            #     topk_values, topk_indices = torch.topk(similarity_by_patch, int(sparsity_upper_bound*frame_token_num))
+            #     topk_indices, _ = torch.sort(topk_indices)
+            #     merge_index_by_patch = topk_indices[0]
+
+            #     self.finish_merging = True
+            #     self.finish_pruning = True
             # ===================== 做 mergeing 
             hidden_states, token_mask = self.merge_tokens_and_get_mask(hidden_states, similarity_by_patch, token_index_by_patch, merge_index_by_patch)
-            
+            self.finish_merging = True
             # ===================== guoyansong 基于frame相似度进行segmentation
             # segments = self._segment_frames_by_similarity(frame_similarity_scores, self.segment_threshold)
             # self.frame_segments = segments  # 保存segments供后续pruning使用
