@@ -15,3 +15,5 @@ wandb/
 *.pdf
 *.pt
 *.nsys-rep
+*.json
+*.jsonl
