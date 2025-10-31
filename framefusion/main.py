@@ -449,6 +449,7 @@ class FrameFusion(nn.Module):
 
             # here only bsz=1
             # update patch type
+            # import pdb; pdb.set_trace()
             self.patch_type = self.patch_type.to(device)[token_mask].reshape(bsz, -1)
             hidden_states = hidden_states[token_mask, :].reshape(bsz, -1, hidden_size)
 
