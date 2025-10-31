@@ -323,18 +323,34 @@ def prepare_inputs_labels_for_multimodal_get_patch_type(self, input_ids, positio
         patch_size = math.ceil(self.get_vision_tower().num_patches_per_side / 2)
     else:
         patch_size = self.get_vision_tower().num_patches_per_side // 2
-    patch_num = patch_size * (patch_size + 1)
+    
 
     assert batch_size == 1
     assert num_images == 1
-    image_token_length = image_features[0].shape[0]
-    n_frames = image_token_length // patch_num
-    image_token_start_index = torch.where(input_ids[0] == IMAGE_TOKEN_INDEX)[0]
-    image_token_end_index = image_token_start_index + image_token_length - 1
-    original_length = input_ids[0].shape[0] + image_token_length - 1
-    patch_type = [TEXT_TOKEN] * image_token_start_index + list(range(patch_num)) * n_frames + [TEXT_TOKEN] * (original_length - image_token_end_index - 1)
-    patch_type = torch.tensor([patch_type], device=new_input_embeds.device)
 
+        # guoyansong :  llava onevision
+    if mm_newline_position == "one_token":
+        image_token_length = image_features[0].shape[0] - 1
+        patch_num = patch_size * patch_size 
+
+        n_frames = image_token_length // patch_num
+        image_token_start_index = torch.where(input_ids[0] == IMAGE_TOKEN_INDEX)[0]
+        image_token_end_index = image_token_start_index + image_token_length - 1
+        original_length = input_ids[0].shape[0] + image_token_length - 1 + 1 # 把mm_newline_position添加的one_token当做text token处理
+        patch_type = [TEXT_TOKEN] * image_token_start_index + list(range(patch_num)) * n_frames + [TEXT_TOKEN] * (original_length - image_token_end_index - 1)
+        patch_type = torch.tensor([patch_type], device=new_input_embeds.device)
+
+    else: # llava video
+        image_token_length = image_features[0].shape[0]
+        patch_num = patch_size * (patch_size + 1)
+
+        n_frames = image_token_length // patch_num
+        image_token_start_index = torch.where(input_ids[0] == IMAGE_TOKEN_INDEX)[0]
+        image_token_end_index = image_token_start_index + image_token_length - 1
+        original_length = input_ids[0].shape[0] + image_token_length - 1
+        patch_type = [TEXT_TOKEN] * image_token_start_index + list(range(patch_num)) * n_frames + [TEXT_TOKEN] * (original_length - image_token_end_index - 1)
+        patch_type = torch.tensor([patch_type], device=new_input_embeds.device)
+    # import pdb; pdb.set_trace()
     self.framefusion.prepare(patch_type, patch_num, image_token_start_index, image_token_end_index, image_token_length, original_length)
     ### FRAMEFUSION END ###
 
