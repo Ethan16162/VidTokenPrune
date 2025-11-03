@@ -349,7 +349,7 @@ class FrameFusion(nn.Module):
             #                     + start_idx
             #     )
             # top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
-            end_time2 = time.time()
+            # end_time2 = time.time()
             # print(f"layer:{layer_idx} | DPP1 运行时间：{end_time2 - start_time1:.6f} 秒 ===")
             
             # ====== CDPruner prune策略  kernel matrix segment
@@ -364,8 +364,8 @@ class FrameFusion(nn.Module):
                                 round(image_token_pruning_length * (1 - pruning_ratio)))
                                 + image_token_pruning_start_index
             )
-            end_time1 = time.time()
-            print(f"layer:{layer_idx} | DPP2 运行时间：{end_time1 - end_time2:.6f} 秒 ===")
+            # end_time1 = time.time()
+            # print(f"layer:{layer_idx} | DPP2 运行时间：{end_time1 - end_time2:.6f} 秒 ===")
             
             
 

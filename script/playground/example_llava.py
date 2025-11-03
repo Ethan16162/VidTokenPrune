@@ -54,7 +54,7 @@ def parse_args():
         default="example/video/Tom_Jerry.mp4",
         help="Path to the input video",
     )
-    parser.add_argument("--max-frames", type=int, default=64, help="Maximum number of frames to process")
+    parser.add_argument("--max-frames", type=int, default=4, help="Maximum number of frames to process")
 
     # Output arguments
     parser.add_argument(
@@ -118,7 +118,7 @@ if __name__ == "__main__":
 
     # compression configs
     config_dict = {
-        "dense": dict(),
+        # "dense": dict(),
         "framefusion": {
             "cost": args.framefusion_cost,
             "similarity_lower_bound": args.framefusion_similarity_lower_bound,

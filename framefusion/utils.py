@@ -24,6 +24,105 @@ def get_attr_by_name(obj: Any, name: str) -> Any:
             current = getattr(current, level)
     return current
 
+import torch
+import matplotlib.pyplot as plt
+import seaborn as sns
+import os  # 用于创建目录
+
+def plot_attention_weights(
+    attn_weight, 
+    title="Attention Weights Heatmap", 
+    figsize=(10, 8),
+    save_path="/home/hunterj/gys/VidTokenPrune/plots_output",
+    tick_interval=5
+):
+    """
+    绘制注意力权重热力图（保留原始位置，仅将数值前50%的元素置1，其余置0）
+    """
+    os.makedirs(save_path, exist_ok=True)
+    
+    # 处理张量（转移到CPU + 转为float32，保留原始形状和位置）
+    if attn_weight.device.type != 'cpu':
+        attn_weight = attn_weight.cpu()
+    modified_attn = attn_weight.detach().float().clone()  # clone()避免修改原张量
+    
+    # --------------------------
+    # 绘制前20%的attn
+    # --------------------------
+    half_quantile = modified_attn.quantile(q=0.8)
+    modified_attn[modified_attn >= half_quantile] = 1.0  # 前50%置1
+    modified_attn[modified_attn < half_quantile] = 0.0   # 后50%置0
+    
+    # 转为numpy用于绘图（此时每个元素的位置和原始矩阵完全一致）
+    attn_np = modified_attn.numpy()
+    
+    # 后续绘图逻辑不变（基于原始位置的修改后数值）
+    q_len = attn_np.shape[0]
+    ticks = list(range(0, q_len, tick_interval))
+    
+    plt.style.use('seaborn-v0_8-whitegrid')
+    plt.figure(figsize=figsize)
+    
+    ax = sns.heatmap(
+        attn_np, 
+        annot=False, 
+        fmt=".2f", 
+        cmap="viridis", 
+        cbar=True,
+        xticklabels=ticks,
+        yticklabels=ticks
+    )
+    
+    plt.title(title, fontsize=15)
+    plt.xlabel("Key Position", fontsize=12)
+    plt.ylabel("Query Position", fontsize=12)
+    plt.xticks(rotation=0)
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+
+    full_save_path = os.path.join(save_path, "attn-layer28-4frames")
+    plt.savefig(full_save_path, dpi=300, bbox_inches="tight")
+    print(f"图像已保存至：{full_save_path}")
+    plt.show()
+
+def scaled_dot_product_attention_experiment(query, key, value, num=1, attn_mask=None, dropout_p=0.0,
+    is_causal=False, scale=None, enable_gqa=False) -> torch.Tensor:
+        # query = query[:,:,-num:,:]
+        L, S = query.size(-2), key.size(-2)
+        scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
+        attn_bias = torch.zeros(L, S, dtype=query.dtype, device=query.device)
+
+        if is_causal:
+            assert attn_mask is None
+            temp_mask = torch.ones(L, S, dtype=torch.bool, device=query.device).triu(diagonal=S - L + 1)
+            attn_bias.masked_fill_(temp_mask, float("-inf"))
+            attn_bias.to(query.dtype)
+
+        if attn_mask is not None:
+            if attn_mask.dtype == torch.bool:
+                attn_bias.masked_fill_(attn_mask.logical_not(), float("-inf"))
+            else:
+                attn_bias += attn_mask
+
+        if enable_gqa:
+            key = key.repeat_interleave(query.size(-3)//key.size(-3), -3)
+            value = value.repeat_interleave(query.size(-3)//value.size(-3), -3)
+
+
+        attn_weight = query@ key.transpose(-2, -1) * scale_factor
+        attn_weight += attn_bias
+        attn_weight = torch.softmax(attn_weight, dim=-1)
+        attn_weight = torch.mean(attn_weight, dim=1).squeeze(0) # torch.Size([q_len, q_len])
+
+        # 调用绘图函数
+        plot_attention_weights(
+            attn_weight,
+            title="Attention Weights (After Softmax)"
+        )
+
+
+        return attn_weight
+
 def scaled_dot_product_attention(query, key, value, num=1, attn_mask=None, dropout_p=0.0,
     is_causal=False, scale=None, enable_gqa=False) -> torch.Tensor:
         query = query[:,:,-num:,:]

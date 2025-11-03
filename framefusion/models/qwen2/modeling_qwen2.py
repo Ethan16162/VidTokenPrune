@@ -6,7 +6,7 @@ from transformers.models.qwen2.modeling_qwen2 import repeat_kv,apply_rotary_pos_
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.utils.doc import add_start_docstrings_to_model_forward
 
-from framefusion.utils import scaled_dot_product_attention
+from framefusion.utils import scaled_dot_product_attention, scaled_dot_product_attention_experiment
 import pdb
 import time
 
@@ -44,10 +44,11 @@ def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
                 into the model
         """
         ### start token merging at layer 0 before attention
-        # pdb.set_trace()
-        if self.self_attn.layer_idx == 0:
-            self.framefusion.init_segment()
-            hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask)
+        
+        # if self.self_attn.layer_idx == 0:
+        #     self.framefusion.init_segment()
+        #     hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask)
+        
         ### end token merging at layer 0 before attention
         
         # pdb.set_trace()
@@ -55,7 +56,7 @@ def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
 
         hidden_states = self.input_layernorm(hidden_states)
 
-        start_time1 = time.time()
+        # start_time1 = time.time()
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
@@ -68,18 +69,16 @@ def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
             position_embeddings=position_embeddings,
         )
         hidden_states = residual + hidden_states
-        end_time1 = time.time()
-        print(f"layer:{self.self_attn.layer_idx} | self_attn 运行时间：{end_time1 - start_time1:.6f} 秒")
+        # end_time1 = time.time()
+        # print(f"layer:{self.self_attn.layer_idx} | self_attn 运行时间：{end_time1 - start_time1:.6f} 秒")
 
-        # =========== guoyansong 从第6层开始剪枝
-        # if self.self_attn.layer_idx >= 6:
+        
         ### start token merging or fastv after attention
-        if self.self_attn.layer_idx >= 7 and self.self_attn.layer_idx % 7 == 0 and self.self_attn.layer_idx < 28:
-            hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask, self_attn_weights, self.self_attn.layer_idx)
-            end_time2 = time.time()
+        # if self.self_attn.layer_idx >= 7 and self.self_attn.layer_idx % 7 == 0 and self.self_attn.layer_idx < 28:
+        #     hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask, self_attn_weights, self.self_attn.layer_idx)
+            # end_time2 = time.time()
         ### end token merging or fastv after attention
-            print(f"layer:{self.self_attn.layer_idx} | framefusion 运行时间：{end_time2 - end_time1:.6f} 秒")
-    
+            
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
@@ -178,7 +177,7 @@ def Qwen2SdpaAttention_merge_then_prune_by_cost_forward(
     
     ### start storing attn_weights if needed
     attn_weights = None
-    question_len = (self.framefusion.segment_hidden_states_mask[0].flip(0) == -1).cumprod(0).sum().item() # guoyasnong:这里改成用question做query计算attn weights再取平均
+    # question_len = (self.framefusion.segment_hidden_states_mask[0].flip(0) == -1).cumprod(0).sum().item() # guoyasnong:这里改成用question做query计算attn weights再取平均
     # import pdb; pdb.set_trace()
     if (q_len > 1) and (self.framefusion.finish_merging) and (not self.framefusion.finish_pruning) and self.layer_idx%7==0:        
         attn_weights = scaled_dot_product_attention(
@@ -191,6 +190,17 @@ def Qwen2SdpaAttention_merge_then_prune_by_cost_forward(
             is_causal=is_causal,
         )
     ### end storing attn_weights if needed
+    # ================ 绘制layer 10的热力图 =========================
+    # if self.layer_idx == 27:
+    #     scaled_dot_product_attention_experiment(
+    #             query_states,
+    #             key_states,
+    #             value_states, # framefusion源码的num = 1，即用倒数最后1个text token做query计算attn weights
+    #             num=1, # num表示计算attn weight的query
+    #             attn_mask=None,
+    #             dropout_p=self.attention_dropout if self.training else 0.0,
+    #             is_causal=is_causal,
+    #         )
         
         
     attn_output = torch.nn.functional.scaled_dot_product_attention(
