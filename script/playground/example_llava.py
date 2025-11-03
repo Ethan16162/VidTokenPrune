@@ -28,7 +28,7 @@ def parse_args():
     parser.add_argument(
         "--model_path",
         type=str,
-        default="lmms-lab/LLaVA-Video-7B-Qwen2",
+        default="/data/gys/models/LLaVA-Video-7B-Qwen2",
         help="Pretrained model path",
     )
     parser.add_argument("--model-name", type=str, default="llava_qwen", help="Model name")

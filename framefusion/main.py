@@ -337,7 +337,8 @@ class FrameFusion(nn.Module):
                 seg_keep_ratio = torch.clamp(seg_keep_ratio, min=0.05, max=0.95) # 避免越界，确保seg_keep_ratio 落在 [0.05, 0.95] 区间内
                 retain_num = int(token_count * seg_keep_ratio)
                 segment_keep_info.append((seg_id, start_idx, token_count, retain_num))
-
+            # import time
+            # start_time1 = time.time()
             # 遍历segment，分别cdpruner
             # top_attention_rank_index = []
             # for seg_id, start_idx, token_count, retain_num in segment_keep_info:
@@ -348,9 +349,12 @@ class FrameFusion(nn.Module):
             #                     + start_idx
             #     )
             # top_attention_rank_index = torch.cat(top_attention_rank_index, dim=0)
+            end_time2 = time.time()
+            # print(f"layer:{layer_idx} | DPP1 运行时间：{end_time2 - start_time1:.6f} 秒 ===")
             
             # ====== CDPruner prune策略  kernel matrix segment
             # 用image token和所有tokens的attn的平均值作为每个image token的relevance score
+            
             top_attention_rank_index = (
                 global_cdpruner_segment_prune(segment_keep_info, 
                                 self.segment_hidden_states_mask[0],
@@ -360,6 +364,8 @@ class FrameFusion(nn.Module):
                                 round(image_token_pruning_length * (1 - pruning_ratio)))
                                 + image_token_pruning_start_index
             )
+            end_time1 = time.time()
+            print(f"layer:{layer_idx} | DPP2 运行时间：{end_time1 - end_time2:.6f} 秒 ===")
             
             
 
@@ -384,7 +390,8 @@ class FrameFusion(nn.Module):
 
             if attention_mask != None:
                 attention_mask = attention_mask[:,:,keep_indexs,:][:,:,:,keep_indexs]
-            # self.finish_pruning = True
+            if layer_idx == 21: # 在prefilling中，最后一个stage完成剪枝后，避免在decoding 阶段还计算attn，降低计算效率
+                self.finish_pruning = True
 
         # merging
         if q_len >1 and (not self.finish_merging):
