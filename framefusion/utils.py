@@ -28,13 +28,14 @@ import torch
 import matplotlib.pyplot as plt
 import seaborn as sns
 import os  # 用于创建目录
+from matplotlib.colors import LinearSegmentedColormap
 
 def plot_attention_weights(
+    layer_idx,
     attn_weight, 
-    title="Attention Weights Heatmap", 
     figsize=(10, 8),
     save_path="/home/hunterj/gys/VidTokenPrune/plots_output",
-    tick_interval=5
+    q = 0.9 # 绘制前q的attn
 ):
     """
     绘制注意力权重热力图（保留原始位置，仅将数值前50%的元素置1，其余置0）
@@ -49,7 +50,7 @@ def plot_attention_weights(
     # --------------------------
     # 绘制前20%的attn
     # --------------------------
-    half_quantile = modified_attn.quantile(q=0.8)
+    half_quantile = modified_attn.quantile(q=q)
     modified_attn[modified_attn >= half_quantile] = 1.0  # 前50%置1
     modified_attn[modified_attn < half_quantile] = 0.0   # 后50%置0
     
@@ -58,34 +59,50 @@ def plot_attention_weights(
     
     # 后续绘图逻辑不变（基于原始位置的修改后数值）
     q_len = attn_np.shape[0]
-    ticks = list(range(0, q_len, tick_interval))
+    ticks = list([0, 14, 839, 934])
+    ticks_name = list(["sys", "video", "prompt"])
+    mid_points = [(ticks[i] + ticks[i+1]) / 2 for i in range(len(ticks) - 1)]
+
     
     plt.style.use('seaborn-v0_8-whitegrid')
     plt.figure(figsize=figsize)
-    
+
+    # 定义自定义颜色映射：从白色到绿色
+    cmap_green = LinearSegmentedColormap.from_list("white_to_green", ["white", "green"])
     ax = sns.heatmap(
         attn_np, 
-        annot=False, 
+        annot=False,
         fmt=".2f", 
-        cmap="viridis", 
+        cmap=cmap_green, 
         cbar=True,
-        xticklabels=ticks,
-        yticklabels=ticks
     )
+    ax.set_xticks(mid_points)
+    ax.set_xticklabels(ticks_name)
+    ax.set_yticks(mid_points)
+    ax.set_yticklabels(ticks_name)
+    # ✅ 绘制垂直 + 水平分界线 & 边界刻度值
+    for t in ticks[1:]:
+        # 垂直分界线 + x轴文字
+        ax.axvline(t, color='black', linestyle='--', linewidth=1)
+        # ax.text(t, -30, str(t), color='black', ha='center', va='top', fontsize=8)
+        
+        # 水平分界线 + y轴文字
+        ax.axhline(t, color='black', linestyle='--', linewidth=1)
+        # ax.text(-50, t, str(t), color='black', ha='right', va='center', fontsize=8)
     
-    plt.title(title, fontsize=15)
+    plt.title(f"Attention Weights layer{layer_idx}", fontsize=15)
     plt.xlabel("Key Position", fontsize=12)
     plt.ylabel("Query Position", fontsize=12)
     plt.xticks(rotation=0)
     plt.yticks(rotation=0)
     plt.tight_layout()
 
-    full_save_path = os.path.join(save_path, "attn-layer28-4frames")
+    full_save_path = os.path.join(save_path, f"attn-layer{layer_idx}-4frames")
     plt.savefig(full_save_path, dpi=300, bbox_inches="tight")
     print(f"图像已保存至：{full_save_path}")
-    plt.show()
+    # plt.show()
 
-def scaled_dot_product_attention_experiment(query, key, value, num=1, attn_mask=None, dropout_p=0.0,
+def scaled_dot_product_attention_experiment(layer_idx, query, key, value, num=1, attn_mask=None, dropout_p=0.0,
     is_causal=False, scale=None, enable_gqa=False) -> torch.Tensor:
         # query = query[:,:,-num:,:]
         L, S = query.size(-2), key.size(-2)
@@ -116,8 +133,8 @@ def scaled_dot_product_attention_experiment(query, key, value, num=1, attn_mask=
 
         # 调用绘图函数
         plot_attention_weights(
+            layer_idx,
             attn_weight,
-            title="Attention Weights (After Softmax)"
         )
 
 

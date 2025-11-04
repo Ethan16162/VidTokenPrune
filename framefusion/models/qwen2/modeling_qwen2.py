@@ -45,9 +45,9 @@ def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
         """
         ### start token merging at layer 0 before attention
         
-        # if self.self_attn.layer_idx == 0:
-        #     self.framefusion.init_segment()
-        #     hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask)
+        if self.self_attn.layer_idx == 0:
+            self.framefusion.init_segment()
+            hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask)
         
         ### end token merging at layer 0 before attention
         
@@ -74,9 +74,8 @@ def Qwen2DecoderLayer_merge_then_prune_by_cost_forward(
 
         
         ### start token merging or fastv after attention
-        # if self.self_attn.layer_idx >= 7 and self.self_attn.layer_idx % 7 == 0 and self.self_attn.layer_idx < 28:
-        #     hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask, self_attn_weights, self.self_attn.layer_idx)
-            # end_time2 = time.time()
+        if self.self_attn.layer_idx >= 7 and self.self_attn.layer_idx % 7 == 0 and self.self_attn.layer_idx < 28:
+            hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask, self_attn_weights, self.self_attn.layer_idx)
         ### end token merging or fastv after attention
             
         # Fully Connected
@@ -191,16 +190,18 @@ def Qwen2SdpaAttention_merge_then_prune_by_cost_forward(
         )
     ### end storing attn_weights if needed
     # ================ 绘制layer 10的热力图 =========================
-    # if self.layer_idx == 27:
-    #     scaled_dot_product_attention_experiment(
-    #             query_states,
-    #             key_states,
-    #             value_states, # framefusion源码的num = 1，即用倒数最后1个text token做query计算attn weights
-    #             num=1, # num表示计算attn weight的query
-    #             attn_mask=None,
-    #             dropout_p=self.attention_dropout if self.training else 0.0,
-    #             is_causal=is_causal,
-    #         )
+    # if self.layer_idx in (0, 1, 2, 3, 5, 8, 12, 14, 20, 24, 27):
+        # scaled_dot_product_attention_experiment(
+        #         self.layer_idx,
+        #         query_states,
+        #         key_states,
+        #         value_states, # framefusion源码的num = 1，即用倒数最后1个text token做query计算attn weights
+        #         num=1, # num表示计算attn weight的query
+        #         attn_mask=None,
+        #         dropout_p=self.attention_dropout if self.training else 0.0,
+        #         is_causal=is_causal,
+        #     )
+       
         
         
     attn_output = torch.nn.functional.scaled_dot_product_attention(
