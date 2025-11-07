@@ -7,7 +7,7 @@ accelerate launch --num_processes=8 \
 -m lmms_eval \
 --model llava_vid \
 --model_args pretrained=/data/gys/models/LLaVA-Video-7B-Qwen2,conv_template=qwen_1_5,max_frames_num=64 \
---tasks nextqa_oe_test \
+--tasks nextqa_mc_test,nextqa_oe_test,mvbench,videomme,videomme_w_subtitle \
 --batch_size 1 \
 --log_samples \
 --log_samples_suffix llava_onevision_float16 \
