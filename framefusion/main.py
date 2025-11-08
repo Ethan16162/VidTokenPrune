@@ -125,6 +125,8 @@ def segment_dynamic_prune_ratio1(segment_mask, hidden_states):
     segment_feat = torch.stack(segment_feat, dim=0)
     N, D = segment_feat.shape
     k = 0.5
+    # ===================== Ablation Study: lambdas=(0 0.2 0.4 0.6 0.8 1.0)
+
     prefix_sum = torch.cumsum(segment_feat, dim=0)  # [N, D]
     suffix_sum = torch.flip(torch.cumsum(torch.flip(segment_feat, [0]), dim=0), [0])
     seg_MV = torch.zeros(N, device=segment_feat.device)
@@ -196,10 +198,49 @@ class FrameFusion(nn.Module):
         self.segment_threshold = segment_threshold  # 用于frame segmentation的阈值
         self.segment_hidden_states_mask = None
         self.frame_segment = False # 控制只在decoder layer0做segment
-        self.prune_ratio = [0.5, 0.5, 0.7, 0.8]#[0.5, 0.3, 0.3, 0.57]#[0.7, 0.6, 0.85, 0.9]
+        self.prune_ratio = [0.5, 0.3, 0.3, 0.57] #[0.5, 0.5, 0.7, 0.8]#[0.7, 0.6, 0.85, 0.9]
 
     def init_segment(self):
         self.frame_segment = False # 控制只在decoder layer0做segment
+
+    def get_segment_id_tensor_MMG_Vid(self,
+                                       h_video,
+                                       image_token_start_index, 
+                                        image_token_end_index, 
+                                         seq_len, 
+                                         frame_segment_threshold=0.4,
+                                           device='cuda'):
+        num_frames, patch_num, hidden_size = h_video.size()
+        mean_frame_feature = h_video.mean(dim=1, keepdim=True)
+        frame_segment_threshold = 0.95 # MMG-Vid
+        # 1. 根据相似度找出segment边界
+        # frame 0 一定是 segment 0
+        segment_ids_per_frame = [0]
+        current_segment = 0
+        for i in range(1, num_frames):
+            frame_similarity_score = F.cosine_similarity(mean_frame_feature[i], mean_frame_feature[i-1], dim=-1)
+            if frame_similarity_score < frame_segment_threshold:
+                current_segment += 1
+            segment_ids_per_frame.append(current_segment)
+        segment_ids_per_frame = torch.tensor(segment_ids_per_frame, device=device)
+
+        # 2. 初始化所有 token 的 segment id = -1
+        segment_id_tensor = torch.full((1, seq_len), -1, dtype=torch.long, device=device)
+
+        # 3. 对每个 frame 的 image token 区间赋值对应 segment id
+        for frame_idx in range(num_frames):
+            seg_id = segment_ids_per_frame[frame_idx]
+            # 当前 frame 的 image token 区间
+            start = image_token_start_index + frame_idx * patch_num
+            end = start + patch_num
+            # 防止超出 image_token_end_index
+            if end > image_token_end_index:
+                end = image_token_end_index
+            segment_id_tensor[0, start:end] = seg_id
+
+        return segment_id_tensor
+
+
 
     # guoyansong 生成segment mask tensor
     def get_segment_id_tensor(self,
@@ -412,10 +453,20 @@ class FrameFusion(nn.Module):
                     similarity_by_patch, token_patch_type_by_patch, self.patch_num, device, self.similarity_lower_bound
                 )
                 # guoyansong 基于frame分段结果，创建segment mask ================= 本函数只执行一次，即只在layer 0 就分好segment
-                frame_segment_threshold = 0.4
+                # frame_segment_threshold = 0.4
+                import os
+                frame_segment_threshold = os.environ.get("SEGMENT_BETA")  # 先获取字符串
+                frame_segment_threshold = float(frame_segment_threshold)
+
+                # ===================== Average Pool segment （MMG-Vid）
+                # 64, 196, 3584
+                h_video = hidden_states[0, self.image_token_start_index:self.image_token_end_index + 1, :].view(-1, self.patch_num, hidden_size)
+                # self.segment_hidden_states_mask = self.get_segment_id_tensor_MMG_Vid(h_video, self.image_token_start_index, self.image_token_end_index, q_len, frame_segment_threshold, device)
+                
+                # ==================== Merge Ratio-based Segment
                 self.segment_hidden_states_mask = self.get_segment_id_tensor(frame_similarity_scores, self.patch_num, self.image_token_start_index, self.image_token_end_index, q_len, frame_segment_threshold, device)
                 self.frame_segment = True
-
+           
             # ======================= 计算 dynamic segment ratio ==================================
             self.seg_MV = segment_dynamic_prune_ratio1(self.segment_hidden_states_mask[0], hidden_states)
             # =================================================================================
