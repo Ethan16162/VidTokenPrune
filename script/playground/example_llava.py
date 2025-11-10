@@ -51,10 +51,10 @@ def parse_args():
     parser.add_argument(
         "--video-path",
         type=str,
-        default="example/video/Tom_Jerry.mp4",
+        default="example/video/movie2.mp4",
         help="Path to the input video",
     )
-    parser.add_argument("--max-frames", type=int, default=4, help="Maximum number of frames to process")
+    parser.add_argument("--max-frames", type=int, default=16, help="Maximum number of frames to process")
 
     # Output arguments
     parser.add_argument(
@@ -82,6 +82,15 @@ def load_video(video_path, max_frames_num, fps=1, force_sample=False):
         frame_time = [i / vr.get_avg_fps() for i in frame_idx]
     frame_time = ",".join([f"{i:.2f}s" for i in frame_time])
     spare_frames = vr.get_batch(frame_idx).asnumpy()
+    # ===== 保存帧为图片 =====
+    output_dir = "/home/hunterj/gys/VidTokenPrune/output_experiment/segments3"
+    import cv2
+    if output_dir is not None:
+        os.makedirs(output_dir, exist_ok=True)
+        for idx, frame in zip(frame_idx, spare_frames):
+            save_path = os.path.join(output_dir, f"frame_{idx:05d}.jpg")
+            # 注意：cv2.imwrite 需要BGR格式
+            cv2.imwrite(save_path, cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
 
     return spare_frames, frame_time, video_time
 
