@@ -17,3 +17,5 @@ wandb/
 *.nsys-rep
 *.json
 *.jsonl
+*.mp4
+*.jpg
