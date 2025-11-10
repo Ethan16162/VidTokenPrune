@@ -20,7 +20,7 @@ accelerate launch --num_processes=8 \
 --main_process_port=25003 \
 -m lmms_eval \
 --model llava_onevision \
---model_args pretrained=lmms-lab/llava-onevision-qwen2-7b-ov,conv_template=qwen_1_5,max_frames_num=32 \
+--model_args pretrained=lmms-lab/llava-onevision-qwen2-7b-ov,conv_template=qwen_1_5,max_frames_num=32,overwrite=False,force_sample=True,add_time_instruction=True \
 --tasks videomme_w_subtitle \
 --batch_size 1 \
 --log_samples \
