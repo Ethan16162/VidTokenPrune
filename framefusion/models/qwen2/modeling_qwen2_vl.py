@@ -176,6 +176,7 @@ def Qwen2VLDecoderLayer_merge_then_fastv_cost_given_forward(
 
     ### start token merging at layer 0 before attention
     if self.self_attn.layer_idx == 0:
+        self.framefusion.init_segment()
         hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask)
     ### end token merging at layer 0 before attention
 
@@ -197,7 +198,8 @@ def Qwen2VLDecoderLayer_merge_then_fastv_cost_given_forward(
     hidden_states = residual + hidden_states
 
     ### start token merging or fastv after attention
-    hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask, self_attn_weights)
+    if self.self_attn.layer_idx >= 7 and self.self_attn.layer_idx % 7 == 0 and self.self_attn.layer_idx < 28:
+        hidden_states, position_embeddings, attention_mask = self.framefusion(hidden_states, position_embeddings, attention_mask, self_attn_weights, self.self_attn.layer_idx)
     ### end token merging or fastv after attention
 
     # Fully Connected
@@ -288,7 +290,7 @@ def Qwen2VLSdpaAttention_merge_then_fastv_cost_given_forward(
 
     ### start storing attn_weights if needed
     attn_weights = None
-    if (q_len > 1) and (self.framefusion.finish_merging) and (not self.framefusion.finish_pruning):        
+    if (q_len > 1) and (self.framefusion.finish_merging) and (not self.framefusion.finish_pruning) and self.layer_idx%7==0:            
         attn_weights = scaled_dot_product_attention(
             query_states,
             key_states,
