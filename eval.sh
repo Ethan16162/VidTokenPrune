@@ -46,11 +46,11 @@
 # mme as an example
 # pip3 install qwen_vl_utils
 HF_ENDPOINT=https://hf-mirror.com \
-CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
-accelerate launch --num_processes=8 --main_process_port=12345 -m lmms_eval \
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
+accelerate launch --num_processes=4 --main_process_port=12345 -m lmms_eval \
     --model qwen2_vl \
     --model_args=pretrained=Qwen/Qwen2-VL-7B-Instruct \
-    --tasks videomme \
+    --tasks videomme_w_subtitle \
     --batch_size 1 --log_samples \
     --log_samples_suffix qwen2-vl \
     --output_path ./logs_qwen2-vl/origin_30_percent
