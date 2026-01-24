@@ -2,30 +2,30 @@
 
 # ==================================== llava video 7b
 # HF_ENDPOINT=https://hf-mirror.com \
+# accelerate launch --num_processes=1 \
+# --main_process_port=25006 \
+# -m lmms_eval \
+# --model llava_onevision \
+# --model_args pretrained=/data/gys/models/LLaVA-Video-7B-Qwen2,conv_template=qwen_1_5,max_frames_num=32 \
+# --tasks videomme \
+# --batch_size 1 \
+# --log_samples \
+# --log_samples_suffix llava_video_float16 \
+# --output_path ./logs_retain_30_percent/llava_video_hieravid_float16/videomme
+
+# ==================================== llava onevision 7b
+HF_ENDPOINT=https://hf-mirror.com \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
 accelerate launch --num_processes=1 \
---main_process_port=25006 \
+--main_process_port=25005 \
 -m lmms_eval \
---model llava_onevision \
---model_args pretrained=/data/gys/models/LLaVA-Video-7B-Qwen2,conv_template=qwen_1_5,max_frames_num=256 \
+--model llava_vid \
+--model_args pretrained=lmms-lab/llava-onevision-qwen2-7b-ov,conv_template=qwen_1_5,max_frames_num=256,overwrite=False,force_sample=True,add_time_instruction=True \
 --tasks videomme \
 --batch_size 1 \
 --log_samples \
---log_samples_suffix llava_video_float16 \
---output_path ./logs_retain_30_percent/llava_video_hieravid_float16/videomme
-
-# ==================================== llava onevision 7b
-# HF_ENDPOINT=https://hf-mirror.com \
-# CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
-# accelerate launch --num_processes=8 \
-# --main_process_port=25005 \
-# -m lmms_eval \
-# --model llava_vid \
-# --model_args pretrained=lmms-lab/llava-onevision-qwen2-7b-ov,conv_template=qwen_1_5,max_frames_num=32,overwrite=False,force_sample=True,add_time_instruction=True \
-# --tasks egoschema_subset \
-# --batch_size 1 \
-# --log_samples \
-# --log_samples_suffix llava_onevision_float16 \
-# --output_path ./logs_retain_10_percent/llava_onevision_hieravid_float16_frame32
+--log_samples_suffix llava_onevision_float16 \
+--output_path ./logs_retain_10_percent/llava_onevision_hieravid_float16_frame32
 
 # ==================================== llava onevision 7b - original model
 # HF_ENDPOINT=https://hf-mirror.com \
