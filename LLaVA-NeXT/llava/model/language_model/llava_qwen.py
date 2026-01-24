@@ -17,7 +17,6 @@ from typing import List, Optional, Tuple, Union, Dict
 import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss
-import time
 
 import transformers
 from transformers import AutoConfig, AutoModelForCausalLM, LlamaConfig, LlamaModel, LlamaForCausalLM
@@ -79,6 +78,14 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         dpo_forward: Optional[bool] = False,
         cache_position=None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
+        is_prefill = past_key_values is None or (
+            getattr(past_key_values, "get_seq_length", None) is not None
+            and past_key_values.get_seq_length() == 0
+        )
+        if is_prefill:
+            torch.cuda.synchronize()
+            self._ttft_start = torch.cuda.Event(enable_timing=True)
+            self._ttft_start.record()
 
         if inputs_embeds is None:
             (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = self.prepare_inputs_labels_for_multimodal(input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities, image_sizes)
@@ -98,10 +105,16 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
 
             hidden_states = outputs[0]
             logits = self.lm_head(hidden_states)
+            if hasattr(self, "_ttft_start"):
+                e = torch.cuda.Event(enable_timing=True)
+                e.record()
+                e.synchronize()
+                print(f"[TTFT] {self._ttft_start.elapsed_time(e):.2f} ms")
+                del self._ttft_start
             return logits, labels
 
         else:
-            return super().forward(
+            result = super().forward(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
@@ -113,6 +126,13 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                 output_hidden_states=output_hidden_states,
                 return_dict=return_dict,
             )
+            if hasattr(self, "_ttft_start"):
+                e = torch.cuda.Event(enable_timing=True)
+                e.record()
+                e.synchronize()
+                print(f"[TTFT] {self._ttft_start.elapsed_time(e):.2f} ms")
+                del self._ttft_start
+            return result
 
     @torch.no_grad()
     def generate(
@@ -127,78 +147,20 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         attention_mask = kwargs.pop("attention_mask", None)
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
-        
-        # encoding计时
-        pref_start = torch.cuda.Event(enable_timing=True)
-        pref_end = torch.cuda.Event(enable_timing=True)
-        decode_start = torch.cuda.Event(enable_timing=True)
-        decode_end = torch.cuda.Event(enable_timing=True)
-        
-        pref_start.record()
         if images is not None:
             (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)
-        pref_end.record()
-
-        measure_ttft = True
-        # 如果需要测量TTFT，注入计时钩子
-        if measure_ttft:
-            self._ttft_enabled = True
-            self._ttft_start = None
-            self._ttft_end = None
-            self._first_token_generated = False
-            self._hook_call_count = 0
-            
-            # 注册forward hook来检测第一个decoding stage的token
-            hook_handles = []
-            def hook_fn(module, input, output):
-                if not self._first_token_generated:
-                    self._hook_call_count += 1
-                    # 第一次forward是prefilling，第二次forward开始是decoding
-                    # 在decoding的第一个forward完成时记录TTFT结束
-                    if self._hook_call_count > 1:
-                        self._ttft_end = torch.cuda.Event(enable_timing=True)
-                        self._ttft_end.record()
-                        self._first_token_generated = True
-            
-            hook_handles.append(self.lm_head.register_forward_hook(hook_fn))
-        
-        # TTFT计时：从prefilling开始到第一个decoding token生成完成
-        if measure_ttft:
-            torch.cuda.synchronize()
-            self._ttft_start = torch.cuda.Event(enable_timing=True)
-            self._ttft_start.record()
-        # prefilling+Decoding计时
-        decode_start.record()
-        outputs = super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
-        decode_end.record()
         
         torch.cuda.synchronize()
-        
-        # 打印或存储时间
-        from loguru import logger
-        logger.info(f"[TIMING] Encoding: {pref_start.elapsed_time(pref_end)/1000:.4f}s, Prefilling+Decoding: {decode_start.elapsed_time(decode_end)/1000:.4f}s")
-
-        if measure_ttft and self._first_token_generated:
-            torch.cuda.synchronize()
-            ttft_time = self._ttft_start.elapsed_time(self._ttft_end) / 1000
-            logger.info(f"[TTFT] Time to First Token: {ttft_time:.6f}s ({ttft_time:.4f}s)")
-        
-        # 清理hook
-        if measure_ttft:
-            for handle in hook_handles:
-                handle.remove()
-            self._ttft_enabled = False
-        
+        e2e_start = torch.cuda.Event(enable_timing=True)
+        e2e_start.record()
+        outputs = super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
+        e2e_end = torch.cuda.Event(enable_timing=True)
+        e2e_end.record()
+        e2e_end.synchronize()
+        print(f" ------ [E2E] {e2e_start.elapsed_time(e2e_end):.2f} ms")
         return outputs
-
-        # if images is not None:
-        #     (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
-        # else:
-        #     inputs_embeds = self.get_model().embed_tokens(inputs)
-
-        # return super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
         images = kwargs.pop("images", None)

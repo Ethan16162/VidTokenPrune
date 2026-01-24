@@ -11,7 +11,7 @@ accelerate launch --num_processes=1 \
 --batch_size 1 \
 --log_samples \
 --log_samples_suffix llava_video_float16 \
---output_path ./logs_retain_30_percent/llava_video_hieravid_float16/videomme
+--output_path ./logs_retain_30_percent/llava_video_hieravid_float16/egoschema_subset
 
 # ==================================== llava onevision 7b
 # HF_ENDPOINT=https://hf-mirror.com \
