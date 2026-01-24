@@ -127,7 +127,7 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
         
-        # Prefilling计时
+        # encoding计时
         pref_start = torch.cuda.Event(enable_timing=True)
         pref_end = torch.cuda.Event(enable_timing=True)
         decode_start = torch.cuda.Event(enable_timing=True)
@@ -139,8 +139,37 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)
         pref_end.record()
+
+        measure_ttft = True
+        # 如果需要测量TTFT，注入计时钩子
+        if measure_ttft:
+            self._ttft_enabled = True
+            self._ttft_start = None
+            self._ttft_end = None
+            self._first_token_generated = False
+            self._hook_call_count = 0
+            
+            # 注册forward hook来检测第一个decoding stage的token
+            hook_handles = []
+            def hook_fn(module, input, output):
+                print(output.past_key_values[0][0].shape[-2])
+                if not self._first_token_generated:
+                    self._hook_call_count += 1
+                    # 第一次forward是prefilling，第二次forward开始是decoding
+                    # 在decoding的第一个forward完成时记录TTFT结束
+                    if self._hook_call_count >= 1:
+                        self._ttft_end = torch.cuda.Event(enable_timing=True)
+                        self._ttft_end.record()
+                        self._first_token_generated = True
+            
+            hook_handles.append(self.model.register_forward_hook(hook_fn))
         
-        # Decoding计时
+        # TTFT计时：从prefilling开始到第一个decoding token生成完成
+        if measure_ttft:
+            torch.cuda.synchronize()
+            self._ttft_start = torch.cuda.Event(enable_timing=True)
+            self._ttft_start.record()
+        # prefilling+Decoding计时
         decode_start.record()
         outputs = super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
         decode_end.record()
@@ -149,10 +178,20 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         
         # 打印或存储时间
         from loguru import logger
-        logger.info(f"[TIMING] Prefilling: {pref_start.elapsed_time(pref_end)/1000:.4f}s, Decoding: {decode_start.elapsed_time(decode_end)/1000:.4f}s")
+        logger.info(f"[TIMING] Encoding: {pref_start.elapsed_time(pref_end)/1000:.4f}s, Prefilling+Decoding: {decode_start.elapsed_time(decode_end)/1000:.4f}s")
+
+        if measure_ttft and self._first_token_generated:
+            torch.cuda.synchronize()
+            ttft_time = self._ttft_start.elapsed_time(self._ttft_end) / 1000
+            logger.info(f"[TTFT] Time to First Token: {ttft_time:.6f}s ({ttft_time:.4f}s)")
+        
+        # 清理hook
+        if measure_ttft:
+            for handle in hook_handles:
+                handle.remove()
+            self._ttft_enabled = False
         
         return outputs
-
 
 
         # if images is not None:
