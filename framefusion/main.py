@@ -200,6 +200,7 @@ class FrameFusion(nn.Module):
 
     def init_segment(self):
         self.frame_segment = False # 控制只在decoder layer0做segment
+        
 
     # guoyansong 生成segment mask tensor
     def get_segment_id_tensor(self,

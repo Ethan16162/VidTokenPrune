@@ -17,6 +17,7 @@ from typing import List, Optional, Tuple, Union, Dict
 import torch
 import torch.nn as nn
 from torch.nn import CrossEntropyLoss
+import time
 
 import transformers
 from transformers import AutoConfig, AutoModelForCausalLM, LlamaConfig, LlamaModel, LlamaForCausalLM
@@ -126,13 +127,78 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         attention_mask = kwargs.pop("attention_mask", None)
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
-
+        
+        # encoding计时
+        pref_start = torch.cuda.Event(enable_timing=True)
+        pref_end = torch.cuda.Event(enable_timing=True)
+        decode_start = torch.cuda.Event(enable_timing=True)
+        decode_end = torch.cuda.Event(enable_timing=True)
+        
+        pref_start.record()
         if images is not None:
             (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
         else:
             inputs_embeds = self.get_model().embed_tokens(inputs)
+        pref_end.record()
 
-        return super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
+        measure_ttft = True
+        # 如果需要测量TTFT，注入计时钩子
+        if measure_ttft:
+            self._ttft_enabled = True
+            self._ttft_start = None
+            self._ttft_end = None
+            self._first_token_generated = False
+            self._hook_call_count = 0
+            
+            # 注册forward hook来检测第一个decoding stage的token
+            hook_handles = []
+            def hook_fn(module, input, output):
+                if not self._first_token_generated:
+                    self._hook_call_count += 1
+                    # 第一次forward是prefilling，第二次forward开始是decoding
+                    # 在decoding的第一个forward完成时记录TTFT结束
+                    if self._hook_call_count > 1:
+                        self._ttft_end = torch.cuda.Event(enable_timing=True)
+                        self._ttft_end.record()
+                        self._first_token_generated = True
+            
+            hook_handles.append(self.lm_head.register_forward_hook(hook_fn))
+        
+        # TTFT计时：从prefilling开始到第一个decoding token生成完成
+        if measure_ttft:
+            torch.cuda.synchronize()
+            self._ttft_start = torch.cuda.Event(enable_timing=True)
+            self._ttft_start.record()
+        # prefilling+Decoding计时
+        decode_start.record()
+        outputs = super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
+        decode_end.record()
+        
+        torch.cuda.synchronize()
+        
+        # 打印或存储时间
+        from loguru import logger
+        logger.info(f"[TIMING] Encoding: {pref_start.elapsed_time(pref_end)/1000:.4f}s, Prefilling+Decoding: {decode_start.elapsed_time(decode_end)/1000:.4f}s")
+
+        if measure_ttft and self._first_token_generated:
+            torch.cuda.synchronize()
+            ttft_time = self._ttft_start.elapsed_time(self._ttft_end) / 1000
+            logger.info(f"[TTFT] Time to First Token: {ttft_time:.6f}s ({ttft_time:.4f}s)")
+        
+        # 清理hook
+        if measure_ttft:
+            for handle in hook_handles:
+                handle.remove()
+            self._ttft_enabled = False
+        
+        return outputs
+
+        # if images is not None:
+        #     (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
+        # else:
+        #     inputs_embeds = self.get_model().embed_tokens(inputs)
+
+        # return super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
         images = kwargs.pop("images", None)
