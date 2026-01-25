@@ -806,7 +806,7 @@ class FrameFusion(nn.Module):
         self.segment_threshold = segment_threshold  # 用于frame segmentation的阈值
         self.segment_hidden_states_mask = None
         self.frame_segment = False # 控制只在decoder layer0做segment
-        self.prune_ratio = [0.5, 0.5, 0.7, 0.8] #[0.7, 0.6, 0.85, 0.9] #[0.5, 0.5, 0.7, 0.8] #[0.5, 0.3, 0.3, 0.57]
+        self.prune_ratio = [0.7, 0.6, 0.85, 0.9] #[0.7, 0.6, 0.85, 0.9] #[0.5, 0.5, 0.7, 0.8] #[0.5, 0.3, 0.3, 0.57]
 
     def init_segment(self):
         self.frame_segment = False # 控制只在decoder layer0做segment

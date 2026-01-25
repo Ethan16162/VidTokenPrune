@@ -7,7 +7,7 @@ accelerate launch --num_processes=1 \
 --main_process_port=25005 \
 -m lmms_eval \
 --model llava_vid \
---model_args pretrained=/data/gys/models/LLaVA-Video-7B-Qwen2,conv_template=qwen_1_5,max_frames_num=256 \
+--model_args pretrained=/data/gys/models/LLaVA-Video-7B-Qwen2,conv_template=qwen_1_5,max_frames_num=32 \
 --tasks videomme \
 --batch_size 1 \
 --log_samples \
