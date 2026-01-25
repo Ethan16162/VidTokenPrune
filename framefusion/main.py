@@ -555,7 +555,7 @@ def _low_rank_dpp_sampling(features_seg, relevance_seg, k, device, rank=None):
     return _dpp_sampling_optimized(L_lowrank, k, device)
 
 
-def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_features, last_layer_attention_avg_image, topk_image_token_num):
+def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_features, last_layer_attention_avg_image, topk_image_token_num, layer_idx):
     """
     Segment-wise DPP 剪枝入口。始终使用 DPP（核 = relevance × similarity × relevance），
     求解采用 FastMAP；按 segment 规模在「精确核」与「Nyström 近似核」间切换，兼顾效果与效率。
@@ -565,10 +565,10 @@ def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_feature
 
     可选 PRUNE_USE_FAST：为 True 时走非 DPP 的 relevance+spread 极速路径（仅作对比用）。
     """
-    if PRUNE_USE_FAST:
-        return _segment_prune_relevance_spread(
-            segment_keep_info, segment_mask, last_layer_attention_avg_image
-        )
+    # if PRUNE_USE_FAST:
+    #     return _segment_prune_relevance_spread(
+    #         segment_keep_info, segment_mask, last_layer_attention_avg_image
+    #     )
 
     # ---------- DPP 路径：精确核 或 Nyström 近似核 + FastMAP ----------
     B, N, D = image_features.shape
@@ -595,11 +595,12 @@ def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_feature
         features_seg = image_normalized[0, seg_idx]
         relevance_seg = relevance[0, seg_idx]
         # import pdb; pdb.set_trace()
-        if seg_len <= NYSTROM_EXACT_THRESHOLD:
+        # if seg_len <= NYSTROM_EXACT_THRESHOLD:
+        if layer_idx >= 14: # 后15层用精确核
             similarity_seg = torch.mm(features_seg, features_seg.t())
             kernel_seg = relevance_seg.unsqueeze(1) * similarity_seg * relevance_seg.unsqueeze(0)
             selected_local = _dpp_sampling_optimized(kernel_seg, k_seg, device)
-        else:
+        else: #
             selected_local = _dpp_fastmap_nystrom(
                 features_seg, relevance_seg, k_seg, device, n_landmarks=NYSTROM_M
             )
@@ -911,13 +912,14 @@ class FrameFusion(nn.Module):
             pref_start = torch.cuda.Event(enable_timing=True)
             pref_end = torch.cuda.Event(enable_timing=True)
             pref_start.record()
+            # import pdb; pdb.set_trace()
             top_attention_rank_index = (
                 global_cdpruner_segment_prune(segment_keep_info, 
                                 self.segment_hidden_states_mask[0],
                                 # 注意！！！下面两条TODO:修改为self.segment_hidden_states_mask,原来基于self.image_token_end_index的写法有问题，因为经历剪枝后self.image_token_end_index没有及时更新
                                 hidden_states[:,(self.segment_hidden_states_mask!=-1)[0] , :],
                                 last_layer_attention_avg[:, (self.segment_hidden_states_mask!=-1)[0]], 
-                                round(image_token_pruning_length * (1 - pruning_ratio)))
+                                round(image_token_pruning_length * (1 - pruning_ratio)), layer_idx)
                                 + image_token_pruning_start_index
             )
             pref_end.record()
