@@ -2,12 +2,12 @@
 
 # ==================================== llava video 7b
 HF_ENDPOINT=https://hf-mirror.com \
-CUDA_VISIBLE_DEVICES=4,5,6,7 \
-accelerate launch --num_processes=4 \
+CUDA_VISIBLE_DEVICES=7 \
+accelerate launch --num_processes=1 \
 --main_process_port=25005 \
 -m lmms_eval \
 --model llava_vid \
---model_args pretrained=/data/gys/models/LLaVA-Video-7B-Qwen2,conv_template=qwen_1_5,max_frames_num=64 \
+--model_args pretrained=/data/gys/models/LLaVA-Video-7B-Qwen2,conv_template=qwen_1_5,max_frames_num=256 \
 --tasks videomme \
 --batch_size 1 \
 --log_samples \
