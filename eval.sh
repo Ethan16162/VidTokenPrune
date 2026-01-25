@@ -2,8 +2,8 @@
 
 # ==================================== llava video 7b
 HF_ENDPOINT=https://hf-mirror.com \
-CUDA_VISIBLE_DEVICES=7 \
-accelerate launch --num_processes=1 \
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
+accelerate launch --num_processes=4 \
 --main_process_port=25005 \
 -m lmms_eval \
 --model llava_vid \

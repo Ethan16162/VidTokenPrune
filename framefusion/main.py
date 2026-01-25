@@ -444,7 +444,7 @@ def _segment_prune_relevance_topk(
 
 # 主流程默认使用超快剪枝（目标 TTFT < 0.5s）；置为 False 则回退到 DPP。
 # 可通过环境变量覆盖：PRUNE_USE_FAST=0 禁用。
-PRUNE_USE_FAST = os.environ.get("PRUNE_USE_FAST", "1") != "0"
+PRUNE_USE_FAST = os.environ.get("PRUNE_USE_FAST", "0") != "0"
 
 # Nyström DPP：segment 长度 ≤ 阈值时用精确核 + FastMAP，否则用 Nyström 近似核 + FastMAP。
 NYSTROM_EXACT_THRESHOLD = int(os.environ.get("NYSTROM_EXACT_THRESHOLD", "64"))
@@ -554,8 +554,63 @@ def _low_rank_dpp_sampling(features_seg, relevance_seg, k, device, rank=None):
     # 在低秩空间进行DPP采样
     return _dpp_sampling_optimized(L_lowrank, k, device)
 
-
 def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_features, last_layer_attention_avg_image, topk_image_token_num, layer_idx):
+        # if PRUNE_USE_FAST:
+    if layer_idx < 8:
+        # print(f"===== {layer_idx} use relevance spread ====")
+        return _segment_prune_relevance_spread(
+            segment_keep_info, segment_mask, last_layer_attention_avg_image
+        )
+    # print(f"===== {layer_idx} use dpp ====")
+    B, N, D = image_features.shape
+    device = image_features.device
+    segment_mask = segment_mask[segment_mask!=-1] # 去掉 -1即文本对应的mask，只留下image token对应的mask
+    
+    # 求解 DPP 矩阵
+    # [CDPruner] Calculate cosine similarity
+    image_normalized = image_features / image_features.norm(dim=-1, keepdim=True) # (B, N, D)
+    image_normalized = image_normalized.float() # (B, N, D)
+    similarity = torch.matmul(image_normalized, image_normalized.transpose(1, 2)) # (B, N, N)
+    
+    relevance = (-last_layer_attention_avg_image) # (B, N)
+    relevance = (relevance - relevance.min() + 1e-6) / (relevance.max() - relevance.min()) # (B, N)
+    kernel = relevance.unsqueeze(2) * similarity * relevance.unsqueeze(1) # (B, N, N)
+
+    selected_global_idx = []  # 存所有选中的全局token idx
+    for seg_id, start_idx, token_count, topk_seg in segment_keep_info:
+        # 1. 找到当前segment对应的index
+        seg_idx = (segment_mask == seg_id).nonzero(as_tuple=True)[0]
+
+        # 2. 切割子矩阵
+        kernel_seg = kernel[:, seg_idx][:, :, seg_idx]  # (B, seg_len, seg_len)
+
+        # 3. 初始化
+        seg_len = kernel_seg.shape[-1]
+        cis = torch.zeros((topk_seg, B, seg_len), device=device)
+        di2s = torch.diagonal(kernel_seg, dim1=1, dim2=2).clone()
+        select_idx_seg = torch.empty((topk_seg, B), dtype=torch.long, device=device)
+
+        # 4. DPP 采样（Fast MAP）
+        for i in range(topk_seg):
+            j = torch.argmax(di2s, dim=-1)
+            select_idx_seg[i] = j
+
+            eis = (kernel_seg[torch.arange(B), j] - torch.einsum('tb,tbn->bn', cis[:i, torch.arange(B), j], cis[:i])) \
+                / torch.sqrt(di2s[torch.arange(B), j]).unsqueeze(-1)
+            cis[i, :, :] = eis
+            di2s -= torch.square(eis)
+            di2s[torch.arange(B), j] = -float('inf')
+        # 5. 局部idx -> 全局idx
+        select_idx_global = seg_idx[select_idx_seg.t()]  # (B, topk_seg)
+        selected_global_idx.append(select_idx_global)
+
+    # 6. 拼接所有 segment 的选择结果
+    selected_global_idx = torch.cat(selected_global_idx, dim=1)  # (B, total_topk)
+
+    # 返回第一个 batch 的选择结果 (和原来一致)
+    return selected_global_idx[0]
+
+def global_cdpruner_segment_prune1(segment_keep_info, segment_mask, image_features, last_layer_attention_avg_image, topk_image_token_num, layer_idx):
     """
     Segment-wise DPP 剪枝入口。始终使用 DPP（核 = relevance × similarity × relevance），
     求解采用 FastMAP；按 segment 规模在「精确核」与「Nyström 近似核」间切换，兼顾效果与效率。
@@ -565,10 +620,11 @@ def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_feature
 
     可选 PRUNE_USE_FAST：为 True 时走非 DPP 的 relevance+spread 极速路径（仅作对比用）。
     """
-    # if PRUNE_USE_FAST:
+    # # if PRUNE_USE_FAST:
+    # if layer_idx <= 14:
     #     return _segment_prune_relevance_spread(
     #         segment_keep_info, segment_mask, last_layer_attention_avg_image
-    #     )
+        # )
 
     # ---------- DPP 路径：精确核 或 Nyström 近似核 + FastMAP ----------
     B, N, D = image_features.shape
@@ -595,8 +651,8 @@ def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_feature
         features_seg = image_normalized[0, seg_idx]
         relevance_seg = relevance[0, seg_idx]
         # import pdb; pdb.set_trace()
-        # if seg_len <= NYSTROM_EXACT_THRESHOLD:
-        if layer_idx >= 14: # 后15层用精确核
+        if seg_len >= NYSTROM_EXACT_THRESHOLD:
+        # if layer_idx > 14: # 后15层用精确核
             similarity_seg = torch.mm(features_seg, features_seg.t())
             kernel_seg = relevance_seg.unsqueeze(1) * similarity_seg * relevance_seg.unsqueeze(0)
             selected_local = _dpp_sampling_optimized(kernel_seg, k_seg, device)
