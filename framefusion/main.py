@@ -749,7 +749,7 @@ class FrameFusion(nn.Module):
         self.segment_threshold = segment_threshold  # 用于frame segmentation的阈值
         self.segment_hidden_states_mask = None
         self.frame_segment = False # 控制只在decoder layer0做segment
-        self.prune_ratio = [0.7, 0.6, 0.85, 0.9] #[0.7, 0.6, 0.85, 0.9] #[0.5, 0.5, 0.7, 0.8] #[0.5, 0.3, 0.3, 0.57]
+        self.prune_ratio = [0.5, 0.5, 0.7, 0.8] #[0.7, 0.6, 0.85, 0.9] #[0.5, 0.5, 0.7, 0.8] #[0.5, 0.3, 0.3, 0.57]
 
     def init_segment(self):
         self.frame_segment = False # 控制只在decoder layer0做segment
@@ -922,10 +922,9 @@ class FrameFusion(nn.Module):
             )
             pref_end.record()
             from loguru import logger
-            logger.info(f" ========== [TIMING] global DPP 【layer index - {layer_idx}】: {pref_start.elapsed_time(pref_end)/1000:.4f}s")
+            # logger.info(f" ========== [TIMING] global DPP 【layer index - {layer_idx}】: {pref_start.elapsed_time(pref_end)/1000:.4f}s")
 
             # end_time1 = time.time()
-            # print(f"layer:{layer_idx} | DPP2 运行时间：{end_time1 - end_time2:.6f} 秒 ===")
             
             
 
