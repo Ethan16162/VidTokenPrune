@@ -148,6 +148,12 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         attention_mask = kwargs.pop("attention_mask", None)
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
+        
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        model_response_start = torch.cuda.Event(enable_timing=True)
+        model_response_start.record()
+        
         if images is not None:
             (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
         else:
@@ -160,9 +166,13 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         e2e_end = torch.cuda.Event(enable_timing=True)
         e2e_end.record()
         e2e_end.synchronize()
-        print(f" ------ [E2E] {e2e_start.elapsed_time(e2e_end):.2f} ms")
+        model_response_time = model_response_start.elapsed_time(e2e_end)
+        llm_only_time = e2e_start.elapsed_time(e2e_end)
+        print(f"[Model Response] {model_response_time:.2f} ms (LLM only: {llm_only_time:.2f} ms)")
+        peak_alloc = torch.cuda.max_memory_allocated() / 1024**3
+        peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
+        print(f"[MEM] peak alloc: {peak_alloc:.2f} GB, peak reserved: {peak_reserved:.2f} GB")
         return outputs
-
 
 
         # if images is not None:
