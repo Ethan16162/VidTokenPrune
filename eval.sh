@@ -31,13 +31,13 @@
 
 # ==================================== llava onevision 7b - original model
 HF_ENDPOINT=https://hf-mirror.com \
-CUDA_VISIBLE_DEVICES=0,1,2,3 \
-accelerate launch --num_processes=4 \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7 \
+accelerate launch --num_processes=8 \
 --main_process_port=25003 \
 -m lmms_eval \
---model llava_vid \
---model_args pretrained=lmms-lab/llava-onevision-qwen2-7b-ov,conv_template=qwen_1_5,max_frames_num=32,overwrite=False,force_sample=True,add_time_instruction=True \
---tasks egoschema_subset \
+--model llava_onevision \
+--model_args pretrained=lmms-lab/llava-onevision-qwen2-7b-ov,conv_template=qwen_1_5,max_frames_num=32 \
+--tasks mvbench,videomme_w_subtitle,egoschema_subset \
 --batch_size 1 \
 --log_samples \
 --log_samples_suffix llava_onevision_float16 \
