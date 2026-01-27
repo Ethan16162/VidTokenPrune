@@ -561,6 +561,8 @@ def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_feature
         return _segment_prune_relevance_spread(
             segment_keep_info, segment_mask, last_layer_attention_avg_image
         )
+    import time
+    dpp_start_time = time.time()
     # print(f"===== {layer_idx} use dpp ====")
     B, N, D = image_features.shape
     device = image_features.device
@@ -606,6 +608,8 @@ def global_cdpruner_segment_prune(segment_keep_info, segment_mask, image_feature
 
     # 6. 拼接所有 segment 的选择结果
     selected_global_idx = torch.cat(selected_global_idx, dim=1)  # (B, total_topk)
+    dpp_end_time = time.time()
+    # print(f"===== {layer_idx} dpp time: {dpp_end_time - dpp_start_time:.4f}s")
 
     # 返回第一个 batch 的选择结果 (和原来一致)
     return selected_global_idx[0]
@@ -806,7 +810,7 @@ class FrameFusion(nn.Module):
         self.segment_threshold = segment_threshold  # 用于frame segmentation的阈值
         self.segment_hidden_states_mask = None
         self.frame_segment = False # 控制只在decoder layer0做segment
-        self.prune_ratio = [0.7, 0.6, 0.85, 0.9] #[0.7, 0.6, 0.85, 0.9] #[0.5, 0.5, 0.7, 0.8] #[0.5, 0.3, 0.3, 0.57]
+        self.prune_ratio = [0.5, 0.5, 0.7, 0.8] #[0.7, 0.6, 0.85, 0.9] #[0.5, 0.5, 0.7, 0.8] #[0.5, 0.3, 0.3, 0.57]
 
     def init_segment(self):
         self.frame_segment = False # 控制只在decoder layer0做segment

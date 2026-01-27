@@ -1,0 +1,164 @@
+\documentclass{article}
+\usepackage{algorithm}
+\usepackage{algorithmicx}
+\usepackage{algpseudocode}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\title{DPP-based Video Token Pruning Algorithm}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{algorithm}
+\caption{Video Token Pruning with DPP}
+\begin{algorithmic}[1]
+\REQUIRE Video frames $\mathcal{V} = \{v_1, v_2, \ldots, v_F\}$, model $\mathcal{M}$, pruning ratio $\rho$
+\ENSURE Pruned token sequence $\mathbf{H}'$
+
+\STATE \textbf{Step 1: Video Encoding}
+\STATE $\mathbf{H}_0 \leftarrow \text{Encode}(\mathcal{V})$ \COMMENT{Encode video frames to image tokens}
+\STATE $\mathbf{H}_0 \in \mathbb{R}^{B \times N \times D}$ \COMMENT{$B$: batch size, $N$: token count, $D$: hidden dimension}
+
+\STATE \textbf{Step 2: Segment Initialization (Layer 0)}
+\STATE $\mathbf{S} \leftarrow \text{ComputeFrameSimilarity}(\mathbf{H}_0)$ \COMMENT{Compute frame-level similarity scores}
+\STATE $\mathcal{G} \leftarrow \text{SegmentFrames}(\mathbf{S}, \tau_{\text{seg}})$ \COMMENT{Segment frames by similarity threshold $\tau_{\text{seg}}$}
+\STATE $\mathbf{M}_{\text{seg}} \leftarrow \text{CreateSegmentMask}(\mathcal{G}, N)$ \COMMENT{Create segment mask $\mathbf{M}_{\text{seg}} \in \mathbb{R}^{B \times N}$}
+
+\STATE \textbf{Step 3: Dynamic Segment Ratio Computation}
+\FOR{each segment $g \in \mathcal{G}$}
+    \STATE $\mathbf{f}_g \leftarrow \text{Mean}(\mathbf{H}_0[\mathbf{M}_{\text{seg}} = g])$ \COMMENT{Average features of segment $g$}
+    \STATE $\text{MV}_g \leftarrow \text{ComputeMV}(\mathbf{f}_g, \mathcal{G})$ \COMMENT{Compute motion value for segment $g$}
+    \STATE $\rho_g \leftarrow \rho + \alpha \cdot \text{MV}_g$ \COMMENT{Dynamic pruning ratio for segment $g$}
+    \STATE $\rho_g \leftarrow \text{Clamp}(\rho_g, 0.05, 0.95)$
+\ENDFOR
+
+\STATE \textbf{Step 4: Token Merging (Early Layers)}
+\STATE $\mathbf{H} \leftarrow \mathbf{H}_0$
+\FOR{layer $l = 0, 1, \ldots, L_{\text{merge}}$}
+    \STATE $\mathbf{S}_{\text{patch}} \leftarrow \text{ComputePatchSimilarity}(\mathbf{H})$ \COMMENT{Compute patch-level cosine similarity}
+    \STATE $\mathcal{I}_{\text{merge}} \leftarrow \text{TopK}(\mathbf{S}_{\text{patch}}, \lfloor \rho \cdot N_{\text{img}} \rfloor)$
+    \STATE $\mathbf{H}, \mathbf{M}_{\text{seg}} \leftarrow \text{MergeTokens}(\mathbf{H}, \mathcal{I}_{\text{merge}}, \mathbf{M}_{\text{seg}})$
+\ENDFOR
+
+\STATE \textbf{Step 5: DPP-based Pruning (Deep Layers)}
+\FOR{layer $l = L_{\text{merge}}+1, \ldots, L$}
+    \IF{$\text{finish\_pruning} = \text{False}$}
+        \STATE $\mathbf{A} \leftarrow \text{AttentionWeights}(\mathbf{H})$ \COMMENT{Get attention weights from last layer}
+        \STATE $\mathbf{r} \leftarrow \text{Mean}(\mathbf{A}, \text{dim}=(1,2))$ \COMMENT{Average attention: $\mathbf{r} \in \mathbb{R}^{B \times N}$}
+        \STATE $\mathbf{r} \leftarrow \text{Normalize}(\mathbf{r})$ \COMMENT{Normalize to $[0,1]$}
+        
+        \STATE $\mathcal{I}_{\text{keep}} \leftarrow \emptyset$
+        \FOR{each segment $g \in \mathcal{G}$}
+            \STATE $N_g \leftarrow |\{i : \mathbf{M}_{\text{seg}}[i] = g\}|$ \COMMENT{Token count in segment $g$}
+            \STATE $k_g \leftarrow \lfloor N_g \cdot \rho_g \rfloor$ \COMMENT{Tokens to keep in segment $g$}
+            
+            \STATE \textbf{Compute DPP Kernel for Segment $g$}
+            \STATE $\mathbf{H}_g \leftarrow \mathbf{H}[\mathbf{M}_{\text{seg}} = g]$ \COMMENT{Extract features of segment $g$}
+            \STATE $\mathbf{H}_g^{\text{norm}} \leftarrow \mathbf{H}_g / \|\mathbf{H}_g\|_2$ \COMMENT{Normalize features}
+            \STATE $\mathbf{S}_g \leftarrow \mathbf{H}_g^{\text{norm}} (\mathbf{H}_g^{\text{norm}})^T$ \COMMENT{Cosine similarity matrix}
+            \STATE $\mathbf{r}_g \leftarrow \mathbf{r}[\mathbf{M}_{\text{seg}} = g]$ \COMMENT{Relevance scores for segment $g$}
+            \STATE $\mathbf{L}_g \leftarrow \mathbf{r}_g \mathbf{r}_g^T \odot \mathbf{S}_g$ \COMMENT{DPP kernel: $\mathbf{L}_g = \text{diag}(\mathbf{r}_g) \mathbf{S}_g \text{diag}(\mathbf{r}_g)$}
+            
+            \STATE \textbf{DPP Sampling (Fast MAP)}
+            \STATE $\mathcal{I}_g \leftarrow \text{DPPFastMAP}(\mathbf{L}_g, k_g)$ \COMMENT{Select $k_g$ tokens using DPP}
+            \STATE $\mathcal{I}_{\text{keep}} \leftarrow \mathcal{I}_{\text{keep}} \cup \mathcal{I}_g$
+        \ENDFOR
+        
+        \STATE $\mathbf{H} \leftarrow \mathbf{H}[\mathcal{I}_{\text{keep}}]$ \COMMENT{Keep selected tokens}
+        \STATE $\mathbf{M}_{\text{seg}} \leftarrow \mathbf{M}_{\text{seg}}[\mathcal{I}_{\text{keep}}]$ \COMMENT{Update segment mask}
+    \ENDIF
+\ENDFOR
+
+\RETURN $\mathbf{H}' \leftarrow \mathbf{H}$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{DPP Fast MAP Sampling}
+\begin{algorithmic}[1]
+\REQUIRE DPP kernel matrix $\mathbf{L} \in \mathbb{R}^{N \times N}$, number of samples $k$
+\ENSURE Selected indices $\mathcal{I} \in \{1, 2, \ldots, N\}^k$
+
+\STATE Initialize $\mathbf{c} \leftarrow \mathbf{0}_{k \times N}$ \COMMENT{Cholesky factors}
+\STATE $\mathbf{d}^2 \leftarrow \text{diag}(\mathbf{L})$ \COMMENT{Diagonal elements}
+\STATE $\mathcal{I} \leftarrow \emptyset$
+
+\FOR{$i = 1$ to $k$}
+    \STATE $j \leftarrow \arg\max_j \mathbf{d}^2[j]$ \COMMENT{Select token with maximum $\mathbf{d}^2[j]$}
+    \STATE $\mathcal{I} \leftarrow \mathcal{I} \cup \{j\}$
+    
+    \STATE \textbf{Compute Cholesky factor}
+    \IF{$i = 1$}
+        \STATE $\mathbf{e}_i \leftarrow \mathbf{L}[j, :] / \sqrt{\mathbf{d}^2[j]}$
+    \ELSE
+        \STATE $\mathbf{e}_i \leftarrow \left(\mathbf{L}[j, :] - \sum_{t=1}^{i-1} \mathbf{c}[t, j] \cdot \mathbf{c}[t, :]\right) / \sqrt{\mathbf{d}^2[j]}$
+    \ENDIF
+    \STATE $\mathbf{c}[i, :] \leftarrow \mathbf{e}_i$
+    
+    \STATE \textbf{Update diagonal}
+    \STATE $\mathbf{d}^2 \leftarrow \mathbf{d}^2 - \mathbf{e}_i^2$ \COMMENT{Schur complement update}
+    \STATE $\mathbf{d}^2[j] \leftarrow -\infty$ \COMMENT{Mark as selected}
+\ENDFOR
+
+\RETURN $\mathcal{I}$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Segment-wise DPP Pruning with Optimization}
+\begin{algorithmic}[1]
+\REQUIRE Segment info $\mathcal{I}_{\text{seg}} = \{(g, s, n, k_g)\}$, features $\mathbf{H}$, relevance $\mathbf{r}$, layer index $l$
+\ENSURE Selected global indices $\mathcal{I}_{\text{global}}$
+
+\STATE $\mathbf{H}^{\text{norm}} \leftarrow \mathbf{H} / \|\mathbf{H}\|_2$ \COMMENT{Normalize features}
+\STATE $\mathbf{S} \leftarrow \mathbf{H}^{\text{norm}} (\mathbf{H}^{\text{norm}})^T$ \COMMENT{Global similarity matrix}
+\STATE $\mathbf{r} \leftarrow \text{Normalize}(\mathbf{r})$ \COMMENT{Normalize relevance}
+\STATE $\mathbf{L} \leftarrow \mathbf{r} \mathbf{r}^T \odot \mathbf{S}$ \COMMENT{Global DPP kernel}
+
+\STATE $\mathcal{I}_{\text{global}} \leftarrow \emptyset$
+
+\FOR{each $(g, s, n, k_g) \in \mathcal{I}_{\text{seg}}$}
+    \STATE $\mathcal{I}_g \leftarrow \{i : \mathbf{M}_{\text{seg}}[i] = g\}$ \COMMENT{Indices of segment $g$}
+    \STATE $\mathbf{L}_g \leftarrow \mathbf{L}[\mathcal{I}_g, \mathcal{I}_g]$ \COMMENT{Extract sub-kernel}
+    
+    \IF{layer $l < 8$}
+        \STATE \COMMENT{Use relevance spread for early layers}
+        \STATE $\mathcal{I}_g^{\text{sel}} \leftarrow \text{RelevanceSpread}(\mathbf{r}[\mathcal{I}_g], k_g)$
+    \ELSE
+        \STATE \COMMENT{Use DPP for deep layers}
+        \IF{$|\mathcal{I}_g| \leq \tau_{\text{nystrom}}$}
+            \STATE \COMMENT{Exact DPP for small segments}
+            \STATE $\mathcal{I}_g^{\text{sel}} \leftarrow \text{DPPFastMAP}(\mathbf{L}_g, k_g)$
+        \ELSE
+            \STATE \COMMENT{Nyström approximation for large segments}
+            \STATE $\mathcal{I}_g^{\text{sel}} \leftarrow \text{DPPNystrom}(\mathbf{H}[\mathcal{I}_g], \mathbf{r}[\mathcal{I}_g], k_g)$
+        \ENDIF
+    \ENDIF
+    
+    \STATE $\mathcal{I}_{\text{global}} \leftarrow \mathcal{I}_{\text{global}} \cup \mathcal{I}_g[\mathcal{I}_g^{\text{sel}}]$
+\ENDFOR
+
+\RETURN $\mathcal{I}_{\text{global}}$
+\end{algorithmic}
+\end{algorithm}
+
+\section*{Notation}
+\begin{itemize}
+    \item $\mathcal{V}$: Input video frames
+    \item $\mathbf{H} \in \mathbb{R}^{B \times N \times D}$: Hidden states (batch $\times$ tokens $\times$ dimension)
+    \item $\mathbf{M}_{\text{seg}} \in \mathbb{R}^{B \times N}$: Segment mask indicating which segment each token belongs to
+    \item $\mathbf{r} \in \mathbb{R}^{B \times N}$: Relevance scores (from attention weights)
+    \item $\mathbf{S} \in \mathbb{R}^{N \times N}$: Similarity matrix (cosine similarity)
+    \item $\mathbf{L} \in \mathbb{R}^{N \times N}$: DPP kernel matrix ($\mathbf{L} = \text{diag}(\mathbf{r}) \mathbf{S} \text{diag}(\mathbf{r})$)
+    \item $\rho$: Global pruning ratio
+    \item $\rho_g$: Dynamic pruning ratio for segment $g$
+    \item $k_g$: Number of tokens to keep in segment $g$
+    \item $\tau_{\text{seg}}$: Segment similarity threshold
+    \item $\tau_{\text{nystrom}}$: Threshold for switching to Nyström approximation
+\end{itemize}
+
+\end{document}

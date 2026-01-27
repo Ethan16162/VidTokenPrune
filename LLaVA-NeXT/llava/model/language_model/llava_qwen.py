@@ -109,7 +109,7 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                 e = torch.cuda.Event(enable_timing=True)
                 e.record()
                 e.synchronize()
-                print(f"[TTFT] {self._ttft_start.elapsed_time(e):.2f} ms")
+                # print(f"[TTFT] {self._ttft_start.elapsed_time(e):.2f} ms")
                 del self._ttft_start
             return logits, labels
 
@@ -167,10 +167,10 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
         e2e_end.synchronize()
         model_response_time = model_response_start.elapsed_time(e2e_end)
         llm_only_time = e2e_start.elapsed_time(e2e_end)
-        print(f"[Model Response] {model_response_time:.2f} ms (LLM only: {llm_only_time:.2f} ms)")
+        # print(f"[Model Response] {model_response_time:.2f} ms (LLM only: {llm_only_time:.2f} ms)")
         peak_alloc = torch.cuda.max_memory_allocated() / 1024**3
         peak_reserved = torch.cuda.max_memory_reserved() / 1024**3
-        print(f"[MEM] peak alloc: {peak_alloc:.2f} GB, peak reserved: {peak_reserved:.2f} GB")
+        # print(f"[MEM] peak alloc: {peak_alloc:.2f} GB, peak reserved: {peak_reserved:.2f} GB")
         return outputs
 
     def prepare_inputs_for_generation(self, input_ids, past_key_values=None, inputs_embeds=None, **kwargs):
